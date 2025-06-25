@@ -3,32 +3,56 @@
 import torch
 
 # --- 1. 路径设置 ---
-# 在Kaggle环境中, input目录是只读的
-DATA_DIR = './data/color'
-# Kaggle的工作目录是 /kaggle/working/，所有输出文件会在这里
+DATA_DIR = './data/color'  # PlantVillage数据集的根目录
 OUTPUT_DIR = './outputs'
 
 # --- 2. 模型预训练配置 ---
-# 设置为 True，可加载下面 CUSTOM_PRETRAINED_MODEL_PATH 指定的、我们自己训练好的模型（例如，继续训练）
-# 设置为 False，将使用标准的 ImageNet 预训练权重
-USE_CUSTOM_PRETRAINED = False  # <--- 新增的开关
+# 初始源模型路径 (例如，ImageNet预训练的ResNet34)
+INITIAL_SOURCE_MODEL_PATH = './data/models/resnet34-b627a593.pth' # 确保这个路径正确
 
-# 标准 ImageNet 预训练权重路径
-IMAGENET_PRETRAINED_PATH = './data/models/resnet34-b627a593.pth'
+# --- 3. 顶级联邦学习参数 (农场间) ---
+NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
+# SERVER_ROUNDS: 控制服务器聚合农场模型的轮数，如果只有一轮微调和蒸馏，则设为1
+SERVER_ROUNDS = 1         # 服务器聚合农场模型的全局轮数
 
-# 我们自己训练好的模型路径 (例如，上次联邦学习的输出)
-# 注意：第一次运行时，这个文件可能不存在。
-CUSTOM_PRETRAINED_MODEL_PATH = './data/models/best_plant_disease_model.pth'
+# --- 4. 农场内联邦学习参数 (模拟设备/计算单元) ---
+CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)
+FARM_FL_ROUNDS = 10       # 每个农场内部联邦学习的通信轮数
+UNITS_PER_FARM_ROUND = 3  # 每轮农场内FL选择的计算单元数量
+EPOCHS_PER_UNIT = 3       # 每个计算单元本地训练的epoch数
 
-# --- 3. 联邦学习参数 ---
-NUM_CLIENTS = 10         # 客户端总数
-NUM_ROUNDS = 15          # 全局通信轮数
-CLIENTS_PER_ROUND = 5    # 每轮选择的客户端数量
-EPOCHS_PER_CLIENT = 5    # 每个客户端本地训练的epoch数
-
-# --- 4. 模型与训练参数 ---
-NUM_CLASSES = 38         # 数据集类别数
-BATCH_SIZE = 32          # 批量大小
-LEARNING_RATE = 0.001    # 学习率
+# --- 5. 模型与训练参数 ---
+NUM_CLASSES_PLANTVILLAGE = 38 # PlantVillage总类别数
+BATCH_SIZE = 32
+LEARNING_RATE_FTL = 0.001   # 联邦迁移学习的初始学习率
+LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = 2          # Kaggle中建议的数据加载进程数
+NUM_WORKERS = 2
+
+# --- 6. 蒸馏参数 ---
+DISTILLATION_EPOCHS = 20
+TEMPERATURE = 3.0           # 蒸馏温度
+ALPHA_DISTILLATION = 0.7    # 蒸馏损失中，软目标损失的权重
+
+# --- 7. 数据集划分参数 ---
+# 这个字典定义了每个农场拥有的作物类别 (基于PlantVillage的文件夹名)
+# 确保所有38个类别都被分配，且不重叠
+FARM_CLASS_ALLOCATION = {
+    'Farm_A': ['Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
+               'Blueberry___healthy', 'Cherry_(including_sour)___Powdery_mildew'],
+    'Farm_B': ['Cherry_(including_sour)___healthy', 'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot',
+               'Corn_(maize)___Common_rust_', 'Corn_(maize)___Northern_Leaf_Blight', 'Corn_(maize)___healthy'],
+    'Farm_C': ['Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)',
+               'Grape___healthy', 'Orange___Haunglongbing_(Citrus_greening)'],
+    'Farm_D': ['Peach___Bacterial_spot', 'Peach___healthy', 'Pepper,_bell___Bacterial_spot',
+               'Pepper,_bell___healthy', 'Potato___Early_blight'],
+    'Farm_E': ['Potato___Late_blight', 'Potato___healthy', 'Raspberry___healthy', 'Soybean___healthy',
+               'Squash___Powdery_mildew', 'Strawberry___Leaf_scorch'],
+    'Farm_F': ['Strawberry___healthy', 'Tomato___Bacterial_spot', 'Tomato___Early_blight',
+               'Tomato___Late_blight', 'Tomato___Leaf_Mold', 'Tomato___Septoria_leaf_spot',
+               'Tomato___Spider_mites Two-spotted_spider_mite', 'Tomato___Target_Spot',
+               'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus', 'Tomato___healthy']
+}
+# 校验类别分配 (确保总共38类)
+assert sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values()) == NUM_CLASSES_PLANTVILLAGE, \
+    f"类别分配错误，应有{NUM_CLASSES_PLANTVILLAGE}个类别，实际分配了{sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values())}个。"
