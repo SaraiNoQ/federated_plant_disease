@@ -13,7 +13,7 @@ INITIAL_SOURCE_MODEL_PATH = './data/models/resnet34-b627a593.pth' # 确保这个
 # --- 3. 顶级联邦学习参数 (农场间) ---
 NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
 # SERVER_ROUNDS: 控制服务器聚合农场模型的轮数，如果只有一轮微调和蒸馏，则设为1
-SERVER_ROUNDS = 1         # 服务器聚合农场模型的全局轮数
+SERVER_ROUNDS = 3         # 服务器聚合农场模型的全局轮数,增加轮数以观察RL效果
 
 # --- 4. 农场内联邦学习参数 (模拟设备/计算单元) ---
 CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)
@@ -56,3 +56,13 @@ FARM_CLASS_ALLOCATION = {
 # 校验类别分配 (确保总共38类)
 assert sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values()) == NUM_CLASSES_PLANTVILLAGE, \
     f"类别分配错误，应有{NUM_CLASSES_PLANTVILLAGE}个类别，实际分配了{sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values())}个。"
+
+# 8.1 强化学习客户端选择
+USE_RL_FARM_SELECTION = True # 是否启用RL选择农场进行聚合
+FARMS_PER_SERVER_ROUND = 3     # 如果启用RL，每轮服务器聚合选择多少个农场
+RL_EXPLORATION_FACTOR = 2.0    # RL (UCB1) 探索因子 C
+
+# 8.2 评估
+# 创建一个包含所有38个类别的全局验证集，用于评估服务器模型
+CREATE_GLOBAL_VALIDATION_SET = True
+GLOBAL_VALIDATION_SPLIT = 0.1 # 从所有数据中分出10%作为全局验证集

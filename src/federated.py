@@ -4,7 +4,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import OrderedDict
-import copy # 需要深拷贝
+import copy
+from scipy.stats import wasserstein_distance
+import numpy as np
 
 def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id):
     """
@@ -105,3 +107,38 @@ def aggregate_models(model_weights_list: list, farm_id_for_log: str = "服务器
 
     print(f"[{farm_id_for_log}] 模型聚合完成。")
     return aggregated_weights
+
+def calculate_wasserstein_distance(state_dict1, state_dict2, layer_prefix='fc'):
+    """
+    计算两个模型状态字典中特定层（例如全连接层）的Wasserstein距离。
+
+    Args:
+        state_dict1 (OrderedDict): 第一个模型的state_dict。
+        state_dict2 (OrderedDict): 第二个模型的state_dict。
+        layer_prefix (str): 要比较的层的前缀，例如 'fc' 或 'classifier.1'。
+
+    Returns:
+        float: 计算出的Wasserstein距离，如果找不到对应层则返回-1。
+    """
+    try:
+        # 提取权重和偏置
+        weights1 = state_dict1[f'{layer_prefix}.weight'].cpu().numpy().flatten()
+        bias1 = state_dict1[f'{layer_prefix}.bias'].cpu().numpy().flatten()
+        
+        weights2 = state_dict2[f'{layer_prefix}.weight'].cpu().numpy().flatten()
+        bias2 = state_dict2[f'{layer_prefix}.bias'].cpu().numpy().flatten()
+
+        # 将权重和偏置拼接成一个分布
+        dist1 = np.concatenate((weights1, bias1))
+        dist2 = np.concatenate((weights2, bias2))
+
+        # 计算1D Wasserstein距离
+        distance = wasserstein_distance(dist1, dist2)
+        return distance
+    except KeyError:
+        # 如果模型结构不同（例如一个是ResNet，一个是MobileNet），可能会找不到key
+        print(f"警告: 无法在两个模型中同时找到前缀为 '{layer_prefix}' 的层来计算Wasserstein距离。")
+        return -1.0
+    except Exception as e:
+        print(f"计算Wasserstein距离时出错: {e}")
+        return -1.0
