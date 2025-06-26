@@ -61,6 +61,8 @@ assert sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values()) == NUM_CL
 USE_RL_FARM_SELECTION = True # 是否启用RL选择农场进行聚合
 FARMS_PER_SERVER_ROUND = 3     # 如果启用RL，每轮服务器聚合选择多少个农场
 RL_EXPLORATION_FACTOR = 2.0    # RL (UCB1) 探索因子 C
+USE_RL_CLIENT_SELECTION = True  # 是否启用RL在农场内部选择客户端
+RL_EXPLORATION_FACTOR = 2.0     # RL (UCB1) 探索因子 C
 
 # 8.2 评估
 # 创建一个包含所有38个类别的全局验证集，用于评估服务器模型

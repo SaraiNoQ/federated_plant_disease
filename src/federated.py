@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import OrderedDict
 import copy
-from scipy.stats import wasserstein_distance
 import numpy as np
 
 def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id):
@@ -22,7 +21,7 @@ def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id):
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     criterion = nn.CrossEntropyLoss() # 标签已经是农场本地的 [0, num_farm_classes-1]
 
-    print(f"  [农场 {farm_id} - 单元 {unit_id}] 开始本地训练, Epochs: {epochs}...")
+    # print(f"  [农场 {farm_id} - 单元 {unit_id}] 开始本地训练, Epochs: {epochs}...")
     for epoch in range(epochs):
         epoch_loss = 0
         num_batches = 0
@@ -35,10 +34,10 @@ def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id):
             optimizer.step()
             epoch_loss += loss.item()
             num_batches +=1
-        if num_batches > 0:
-             print(f"    Epoch {epoch+1}/{epochs}, 平均损失: {epoch_loss/num_batches:.4f}")
-        else:
-            print(f"    Epoch {epoch+1}/{epochs}, 无数据进行训练。")
+        # if num_batches > 0:
+        #      print(f"    Epoch {epoch+1}/{epochs}, 平均损失: {epoch_loss/num_batches:.4f}")
+        # else:
+        #     print(f"    Epoch {epoch+1}/{epochs}, 无数据进行训练。")
 
 
     return model.state_dict()
@@ -88,57 +87,22 @@ def aggregate_models(model_weights_list: list, farm_id_for_log: str = "服务器
     # **当前最简化的实现：此函数用于农场内聚合，结构是相同的。**
     # **用于服务器聚合时，需要确保传入的农场模型state_dict结构一致。**
 
-    print(f"[{farm_id_for_log}] 正在聚合 {len(model_weights_list)} 个模型...")
+    # print(f"[{farm_id_for_log}] 正在聚合 {len(model_weights_list)} 个模型...")
     keys = model_weights_list[0].keys()
     aggregated_weights = OrderedDict()
 
     for key in keys:
-        # 收集所有客户端在当前层的权重
-        try:
-            layer_weights = [weights[key].float() for weights in model_weights_list]
-            aggregated_weights[key] = torch.stack(layer_weights).mean(0)
-        except RuntimeError as e:
-            print(f"!! 聚合错误在层 '{key}': {e}")
-            print("  这通常发生在尝试聚合同一层的不同形状的张量时。")
-            print("  请检查参与聚合的模型是否有相同的结构，特别是分类头。")
-            # 可以选择跳过这个层，或者抛出异常
-            # 为简单起见，如果发生错误，我们可能无法正确聚合，返回None
-            return None # 或者更复杂的错误处理
+        if all(key in weights for weights in model_weights_list):
+            try:
+                layer_weights = [weights[key].float() for weights in model_weights_list]
+                if all(w.shape == layer_weights[0].shape for w in layer_weights):
+                    aggregated_weights[key] = torch.stack(layer_weights).mean(0)
+                # else:
+                #     print(f"  - 跳过聚合层 '{key}'，因为形状不匹配。")
+            except RuntimeError as e:
+                print(f"!! 聚合错误在层 '{key}': {e}。跳过此层。")
+        # else:
+        #     print(f"  - 跳过聚合层 '{key}'，因为它并非在所有模型中都存在。")
 
-    print(f"[{farm_id_for_log}] 模型聚合完成。")
+    # print(f"[{farm_id_for_log}] 模型聚合完成。")
     return aggregated_weights
-
-def calculate_wasserstein_distance(state_dict1, state_dict2, layer_prefix='fc'):
-    """
-    计算两个模型状态字典中特定层（例如全连接层）的Wasserstein距离。
-
-    Args:
-        state_dict1 (OrderedDict): 第一个模型的state_dict。
-        state_dict2 (OrderedDict): 第二个模型的state_dict。
-        layer_prefix (str): 要比较的层的前缀，例如 'fc' 或 'classifier.1'。
-
-    Returns:
-        float: 计算出的Wasserstein距离，如果找不到对应层则返回-1。
-    """
-    try:
-        # 提取权重和偏置
-        weights1 = state_dict1[f'{layer_prefix}.weight'].cpu().numpy().flatten()
-        bias1 = state_dict1[f'{layer_prefix}.bias'].cpu().numpy().flatten()
-        
-        weights2 = state_dict2[f'{layer_prefix}.weight'].cpu().numpy().flatten()
-        bias2 = state_dict2[f'{layer_prefix}.bias'].cpu().numpy().flatten()
-
-        # 将权重和偏置拼接成一个分布
-        dist1 = np.concatenate((weights1, bias1))
-        dist2 = np.concatenate((weights2, bias2))
-
-        # 计算1D Wasserstein距离
-        distance = wasserstein_distance(dist1, dist2)
-        return distance
-    except KeyError:
-        # 如果模型结构不同（例如一个是ResNet，一个是MobileNet），可能会找不到key
-        print(f"警告: 无法在两个模型中同时找到前缀为 '{layer_prefix}' 的层来计算Wasserstein距离。")
-        return -1.0
-    except Exception as e:
-        print(f"计算Wasserstein距离时出错: {e}")
-        return -1.0
