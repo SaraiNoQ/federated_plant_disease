@@ -4,14 +4,13 @@ import torch
 import os
 import numpy as np
 import copy
-import collections
 import datetime
 
 # 导入我们自己的模块
 import config
 from src.data_loader import get_farm_dataloaders
 from src.models import build_model
-from src.federated import farm_unit_update, aggregate_models
+from src.federated import farm_unit_update, aggregate_models, farm_unit_update_fedprox
 from src.distillation import distill_model
 from src.utils import evaluate_model, plot_server_fl_history
 from src.rl_selector import UCB1Selector # 导入RL选择器
@@ -126,14 +125,20 @@ def main():
                     # print(f"    [Farm {farm_id} RL] Round {farm_fl_round+1}, Selected clients: {selected_unit_indices}")
                 else:
                     selected_unit_indices = np.random.choice(active_unit_indices, num_units_to_select, replace=False)
-                
+
+                farm_round_start_model = copy.deepcopy(farm_global_model).to(config.DEVICE)
                 # Train selected clients
                 unit_model_updates = [
-                    farm_unit_update(
-                        model=copy.deepcopy(farm_global_model).to(config.DEVICE),
+                    farm_unit_update_fedprox(
+                        model=copy.deepcopy(farm_round_start_model),  # Send a fresh copy
+                        global_model=farm_round_start_model,  # Send reference for prox term
                         train_loader=farm_data["unit_loaders"][unit_idx],
-                        epochs=config.EPOCHS_PER_UNIT, lr=config.LEARNING_RATE_FTL, device=config.DEVICE,
-                        farm_id=farm_id, unit_id=unit_idx
+                        epochs=config.EPOCHS_PER_UNIT,
+                        lr=config.LEARNING_RATE_FTL,
+                        device=config.DEVICE,
+                        farm_id=farm_id,
+                        unit_id=unit_idx,
+                        mu=config.FEDPROX_MU  # Use the new mu parameter
                     ) for unit_idx in selected_unit_indices
                 ]
                 
