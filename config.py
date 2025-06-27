@@ -58,6 +58,7 @@ assert sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values()) == NUM_CL
     f"类别分配错误，应有{NUM_CLASSES_PLANTVILLAGE}个类别，实际分配了{sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values())}个。"
 
 # 8.1 强化学习客户端选择
+RL_STRATEGY = 'Thompson'        # <<< 新增：选择 'Thompson' 或 'UCB'
 USE_RL_FARM_SELECTION = True # 是否启用RL选择农场进行聚合
 FARMS_PER_SERVER_ROUND = 3     # 如果启用RL，每轮服务器聚合选择多少个农场
 RL_EXPLORATION_FACTOR = 2.0    # RL (UCB1) 探索因子 C

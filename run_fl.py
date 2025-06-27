@@ -13,7 +13,7 @@ from src.models import build_model
 from src.federated import farm_unit_update, aggregate_models, farm_unit_update_fedprox
 from src.distillation import distill_model
 from src.utils import evaluate_model, plot_server_fl_history
-from src.rl_selector import UCB1Selector # 导入RL选择器
+from src.rl_selector import UCB1Selector, ThompsonSamplingSelector
 
 def main():
     """主执行函数"""
@@ -56,27 +56,36 @@ def main():
         pretrained_path=config.INITIAL_SOURCE_MODEL_PATH
     ).to(config.DEVICE)
 
+    # 定义选择器类
+    selector_class = None
+    if config.RL_STRATEGY.lower() == 'thompson':
+        selector_class = ThompsonSamplingSelector
+        print("RL Strategy: Thompson Sampling")
+    elif config.RL_STRATEGY.lower() == 'ucb':
+        selector_class = UCB1Selector
+        print("RL Strategy: UCB1")
+
     # Layer 1: Farm Selector
     server_rl_selector = None
-    if config.USE_RL_FARM_SELECTION:
+    if config.USE_RL_FARM_SELECTION and selector_class:
         farm_ids = list(all_farms_data_loaders.keys())
-        server_rl_selector = UCB1Selector(
-            num_farms=len(farm_ids),
-            farm_ids=farm_ids,
-            exploration_factor=config.RL_EXPLORATION_FACTOR
+        server_rl_selector = selector_class(
+            num_arms=len(farm_ids),
+            arm_ids=farm_ids,
+            exploration_factor=config.RL_EXPLORATION_FACTOR # Thompson会忽略这个
         )
         print("Layer 1 RL (Farm Selection) is ENABLED.")
     
     # Layer 2: Client Selectors (one per farm)
     farm_rl_selectors = {}
-    if config.USE_RL_CLIENT_SELECTION:
+    if config.USE_RL_CLIENT_SELECTION and selector_class:
         print("Layer 2 RL (Client Selection) is ENABLED for each farm.")
         for farm_id, farm_data in all_farms_data_loaders.items():
             num_units = len(farm_data["unit_loaders"])
             if num_units > 0:
-                farm_rl_selectors[farm_id] = UCB1Selector(
-                    num_farms=num_units,
-                    farm_ids=list(range(num_units)),
+                farm_rl_selectors[farm_id] = selector_class(
+                    num_arms=num_units,
+                    arm_ids=list(range(num_units)),
                     exploration_factor=config.RL_EXPLORATION_FACTOR
                 )
 

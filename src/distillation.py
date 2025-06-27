@@ -23,23 +23,25 @@ def distill_model(
     output_dir: str
 ):
     """
-    Trains a student model using knowledge distillation.
+    Trains a student model using knowledge distillation with a learning rate scheduler.
     """
-    print(f"  [Distillation Farm {farm_id}] Starting process...")
+    # print(f"  [Distillation Farm {farm_id}] Starting process...")
 
-    # 1. Build the student model
+    # 1. Build the student model and optimizer
     student_model = build_student_model(num_classes=num_farm_classes).to(device)
     optimizer = optim.Adam(student_model.parameters(), lr=lr)
+    
+    # --- vvvvvvvvvvvv 新增：学习率调度器 vvvvvvvvvvvv ---
+    # T_max 是调度器周期的一半，我们设置为总的epoch数，让它完成一个完整的退火周期
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=0)
+    # --- ^^^^^^^^^^^^^^ 修改结束 ^^^^^^^^^^^^^^ ---
 
     teacher_model.eval()
-    student_model.train()
-
     best_student_accuracy = 0.0
     best_student_model_state = None
 
     for epoch in range(epochs):
-        running_loss_kd = 0.0
-        running_loss_ce = 0.0
+        student_model.train() # 确保每轮开始时模型处于训练模式
         running_loss_total = 0.0
         processed_samples = 0
 
@@ -63,43 +65,34 @@ def distill_model(
             total_loss.backward()
             optimizer.step()
 
-            running_loss_kd += loss_kd.item() * inputs.size(0)
-            running_loss_ce += loss_ce.item() * inputs.size(0)
             running_loss_total += total_loss.item() * inputs.size(0)
             processed_samples += inputs.size(0)
+        
+        # --- vvvvvvvvvvvv 新增：更新调度器 vvvvvvvvvvvv ---
+        scheduler.step()
+        # --- ^^^^^^^^^^^^^^ 修改结束 ^^^^^^^^^^^^^^ ---
         
         if processed_samples == 0: continue
 
         avg_loss_total = running_loss_total / processed_samples
-        print(f"    Epoch {epoch+1}/{epochs} | Avg Distill Loss: {avg_loss_total:.4f}")
-
-        # --- vvvvvvvvvvvv MODIFICATION START vvvvvvvvvvvv ---
+        
         if distill_val_loader and len(distill_val_loader.dataset) > 0:
-            # Assign the returned dictionary to a single variable 'metrics'
             metrics = evaluate_model(student_model, distill_val_loader, device, context=f"Distill Eval Farm {farm_id}")
-            
-            # Access values by key
-            student_val_loss = metrics['loss']
             student_val_accuracy = metrics['accuracy']
             
-            print(f"      Student Model Val: Loss = {student_val_loss:.4f}, Accuracy = {student_val_accuracy:.2f}%")
+            print(f"    Epoch {epoch+1}/{epochs} | Avg Distill Loss: {avg_loss_total:.4f} | Val Acc: {student_val_accuracy:.2f}% | LR: {scheduler.get_last_lr()[0]:.6f}")
             
             if student_val_accuracy > best_student_accuracy:
                 best_student_accuracy = student_val_accuracy
                 best_student_model_state = copy.deepcopy(student_model.state_dict())
-                print(f"      New best student model for Farm {farm_id}! Accuracy: {best_student_accuracy:.2f}%")
-        else:
-             best_student_model_state = copy.deepcopy(student_model.state_dict())
-        # --- ^^^^^^^^^^^^^^ MODIFICATION END ^^^^^^^^^^^^^^ ---
-
-
+                # print(f"      New best student model for Farm {farm_id}! Accuracy: {best_student_accuracy:.2f}%")
+    
     if best_student_model_state:
         student_model.load_state_dict(best_student_model_state)
         print(f"  [Distillation Farm {farm_id}] Final student model loaded with best accuracy: {best_student_accuracy:.2f}%")
-
         student_model_save_path = os.path.join(output_dir, f'student_model_farm_{farm_id}.pth')
         torch.save(student_model.state_dict(), student_model_save_path)
-        print(f"  Student model for Farm {farm_id} saved to: {student_model_save_path}")
+        # print(f"  Student model for Farm {farm_id} saved to: {student_model_save_path}")
     else:
         print(f"  Warning: Could not produce a valid student model for Farm {farm_id}.")
 

@@ -82,3 +82,42 @@ class UCB1Selector:
         print(f"[RL Selector] 已更新农场 {selected_farm_ids} 的统计数据，奖励为: {reward:.4f}")
         print(f"  - 新的平均奖励: {self.avg_rewards.round(3)}")
         print(f"  - 新的选择计数: {self.pull_counts}")
+
+class ThompsonSamplingSelector:
+    """
+    使用汤普森采样的臂/客户端选择器，基于Beta分布。
+    """
+    def __init__(self, num_arms, arm_ids, **kwargs): # kwargs用于接收多余的参数
+        self.num_arms = num_arms
+        self.arm_ids = arm_ids
+        self.arm_id_to_idx = {arm_id: i for i, arm_id in enumerate(arm_ids)}
+        # Beta分布的参数: alpha是“成功”次数+1, beta是“失败”次数+1
+        # 我们从无信息的先验开始 (alpha=1, beta=1)
+        self.alpha = np.ones(num_arms)
+        self.beta = np.ones(num_arms)
+
+    def select_farms(self, num_to_select):
+        """
+        从每个臂的Beta分布中采样，并选择样本值最高的N个臂。
+        """
+        # np.random.beta(a, b) 从 a, b 参数定义的Beta分布中抽取样本
+        samples = np.random.beta(self.alpha, self.beta)
+        
+        # 选择样本值最高的N个臂
+        selected_indices = np.argsort(samples)[-num_to_select:]
+        return [self.arm_ids[i] for i in selected_indices]
+
+    def update(self, selected_arm_ids, reward):
+        """
+        根据奖励更新被选中的臂的Beta分布参数。
+        """
+        # 将奖励映射为“成功”或“失败”
+        # 这里我们定义：任何正向的奖励都算作成功
+        is_success = reward > 0
+
+        for arm_id in selected_arm_ids:
+            idx = self.arm_id_to_idx[arm_id]
+            if is_success:
+                self.alpha[idx] += 1 # 增加成功计数
+            else:
+                self.beta[idx] += 1  # 增加失败计数
