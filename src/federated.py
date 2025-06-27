@@ -123,3 +123,34 @@ def aggregate_models(model_weights_list: list, farm_id_for_log: str = "服务器
                 print(f"!! Aggregation error on layer '{key}': {e}. Skipping this layer.")
 
     return aggregated_weights
+
+def aggregate_models_rl(model_weights_list: list, aggregation_weights: np.ndarray, farm_id_for_log: str = "服务器 (RL)"):
+    """
+    Generic model aggregation function using specified weights.
+    """
+    if not model_weights_list or aggregation_weights is None:
+        return None
+    
+    if len(model_weights_list) != len(aggregation_weights):
+        print(f"!! Aggregation error: Mismatch between number of models ({len(model_weights_list)}) and weights ({len(aggregation_weights)})")
+        return None
+
+    keys = model_weights_list[0].keys()
+    aggregated_weights = OrderedDict()
+
+    print(f"[{farm_id_for_log}] Aggregating with RL weights: {np.round(aggregation_weights, 3)}")
+
+    for key in keys:
+        if all(key in weights for weights in model_weights_list):
+            try:
+                # 获取所有模型的当前层，并应用权重
+                weighted_layers = [weights[key].float() * weight for weights, weight in zip(model_weights_list, aggregation_weights)]
+                
+                # 检查形状是否一致
+                if all(w.shape == weighted_layers[0].shape for w in weighted_layers):
+                    # 叠加求和
+                    aggregated_weights[key] = torch.stack(weighted_layers).sum(0)
+            except RuntimeError as e:
+                print(f"!! Aggregation error on layer '{key}': {e}. Skipping this layer.")
+
+    return aggregated_weights

@@ -1,0 +1,186 @@
+nohup: ignoring input
+--- 多农场联邦迁移学习与模型蒸馏项目启动 (V4: RL-Powered Aggregation) ---
+使用设备: cuda:0
+
+--- 步骤1: 准备数据集与全局验证集 ---
+PlantVillage总类别数: 38
+PlantVillage总样本数: 54305
+
+--- 正在创建全局验证集 (划分比例: 0.1) ---
+全局验证集创建完成，样本数: 5430
+用于农场划分的剩余样本数: 48875
+
+--- 正在为农场 Farm_A 准备数据 ---
+农场 Farm_A: 总样本数 5152, 训练样本 4121, 验证样本 1031
+  - 农场 Farm_A - 单元 0: 分配了 825 个训练样本。
+  - 农场 Farm_A - 单元 1: 分配了 824 个训练样本。
+  - 农场 Farm_A - 单元 2: 分配了 824 个训练样本。
+  - 农场 Farm_A - 单元 3: 分配了 824 个训练样本。
+  - 农场 Farm_A - 单元 4: 分配了 824 个训练样本。
+
+--- 正在为农场 Farm_B 准备数据 ---
+农场 Farm_B: 总样本数 4265, 训练样本 3412, 验证样本 853
+  - 农场 Farm_B - 单元 0: 分配了 683 个训练样本。
+  - 农场 Farm_B - 单元 1: 分配了 683 个训练样本。
+  - 农场 Farm_B - 单元 2: 分配了 682 个训练样本。
+  - 农场 Farm_B - 单元 3: 分配了 682 个训练样本。
+  - 农场 Farm_B - 单元 4: 分配了 682 个训练样本。
+
+--- 正在为农场 Farm_C 准备数据 ---
+农场 Farm_C: 总样本数 8647, 训练样本 6917, 验证样本 1730
+  - 农场 Farm_C - 单元 0: 分配了 1384 个训练样本。
+  - 农场 Farm_C - 单元 1: 分配了 1384 个训练样本。
+  - 农场 Farm_C - 单元 2: 分配了 1383 个训练样本。
+  - 农场 Farm_C - 单元 3: 分配了 1383 个训练样本。
+  - 农场 Farm_C - 单元 4: 分配了 1383 个训练样本。
+
+--- 正在为农场 Farm_D 准备数据 ---
+农场 Farm_D: 总样本数 5468, 训练样本 4374, 验证样本 1094
+  - 农场 Farm_D - 单元 0: 分配了 875 个训练样本。
+  - 农场 Farm_D - 单元 1: 分配了 875 个训练样本。
+  - 农场 Farm_D - 单元 2: 分配了 875 个训练样本。
+  - 农场 Farm_D - 单元 3: 分配了 875 个训练样本。
+  - 农场 Farm_D - 单元 4: 分配了 874 个训练样本。
+
+--- 正在为农场 Farm_E 准备数据 ---
+农场 Farm_E: 总样本数 8631, 训练样本 6904, 验证样本 1727
+  - 农场 Farm_E - 单元 0: 分配了 1381 个训练样本。
+  - 农场 Farm_E - 单元 1: 分配了 1381 个训练样本。
+  - 农场 Farm_E - 单元 2: 分配了 1381 个训练样本。
+  - 农场 Farm_E - 单元 3: 分配了 1381 个训练样本。
+  - 农场 Farm_E - 单元 4: 分配了 1380 个训练样本。
+
+--- 正在为农场 Farm_F 准备数据 ---
+农场 Farm_F: 总样本数 16712, 训练样本 13369, 验证样本 3343
+  - 农场 Farm_F - 单元 0: 分配了 2674 个训练样本。
+  - 农场 Farm_F - 单元 1: 分配了 2674 个训练样本。
+  - 农场 Farm_F - 单元 2: 分配了 2674 个训练样本。
+  - 农场 Farm_F - 单元 3: 分配了 2674 个训练样本。
+  - 农场 Farm_F - 单元 4: 分配了 2673 个训练样本。
+
+--- 步骤2: 初始化服务器模型与RL选择器 ---
+正在初始化ResNet34模型结构，目标类别数: 38
+模型分类头已修改为支持 38 个类别。
+正在从本地路径加载权重: ./data/models/resnet34-b627a593.pth
+加载通用预训练模型 (如ImageNet)，将忽略不匹配的分类头。
+  - 忽略预训练权重中的层: fc.weight (分类头不匹配)
+  - 忽略预训练权重中的层: fc.bias (分类头不匹配)
+通用预训练权重加载完成。尝试加载了 180 个层。
+提示: 'fc.weight' 层被忽略，这是加载ImageNet权重到不同类别数模型时的预期行为。
+RL Strategy: Thompson Sampling
+Layer 1 RL (Farm Selection) is ENABLED.
+Layer 2 RL (Client Selection) is ENABLED for each farm.
+PPO Aggregation Agent is [ENABLED].
+
+
+ K========== 服务器全局轮次: 1/3 K==========
+[Server RL] Selected farms for this round: ['Farm_A', 'Farm_B', 'Farm_C']
+
+  --- Processing Farm: Farm_A ---
+正在初始化ResNet34模型结构，目标类别数: 6
+模型分类头已修改为支持 6 个类别。
+未提供预训练权重路径。模型将从随机权重开始训练（除了fc层）。
+    FL Round 1/10 | Clients: [1, 0, 2] -> Acc: 84.48%
+    FL Round 2/10 | Clients: [1, 2, 0] -> Acc: 94.47%
+    FL Round 3/10 | Clients: [2, 1, 3] -> Acc: 97.09%
+    FL Round 4/10 | Clients: [2, 1, 0] -> Acc: 97.67%
+    FL Round 5/10 | Clients: [1, 2, 0] -> Acc: 98.55%
+    FL Round 6/10 | Clients: [1, 2, 0] -> Acc: 99.13%
+    FL Round 7/10 | Clients: [1, 2, 0] -> Acc: 98.74%
+    FL Round 8/10 | Clients: [2, 0, 1] -> Acc: 98.45%
+    FL Round 9/10 | Clients: [0, 1, 2] -> Acc: 98.64%
+    FL Round 10/10 | Clients: [0, 1, 3] -> Acc: 99.81%
+  --- Starting Model Distillation for Farm: Farm_A ---
+学生模型 (mobilenet_v2) 已构建，支持 6 个类别。
+    Epoch 1/20 | Avg Distill Loss: 1.7729 | Val Acc: 96.61% | LR: 0.000994
+    Epoch 2/20 | Avg Distill Loss: 0.5856 | Val Acc: 99.52% | LR: 0.000976
+    Epoch 3/20 | Avg Distill Loss: 0.4173 | Val Acc: 99.22% | LR: 0.000946
+    Epoch 4/20 | Avg Distill Loss: 0.3351 | Val Acc: 99.13% | LR: 0.000905
+    Epoch 5/20 | Avg Distill Loss: 0.2528 | Val Acc: 99.32% | LR: 0.000854
+    Epoch 6/20 | Avg Distill Loss: 0.1986 | Val Acc: 99.42% | LR: 0.000794
+    Epoch 7/20 | Avg Distill Loss: 0.1620 | Val Acc: 99.42% | LR: 0.000727
+    Epoch 8/20 | Avg Distill Loss: 0.1400 | Val Acc: 99.42% | LR: 0.000655
+    Epoch 9/20 | Avg Distill Loss: 0.1192 | Val Acc: 99.42% | LR: 0.000578
+    Epoch 10/20 | Avg Distill Loss: 0.1094 | Val Acc: 99.42% | LR: 0.000500
+    Epoch 11/20 | Avg Distill Loss: 0.0994 | Val Acc: 99.32% | LR: 0.000422
+    Epoch 12/20 | Avg Distill Loss: 0.0900 | Val Acc: 99.52% | LR: 0.000345
+    Epoch 13/20 | Avg Distill Loss: 0.0819 | Val Acc: 99.22% | LR: 0.000273
+    Epoch 14/20 | Avg Distill Loss: 0.0786 | Val Acc: 99.42% | LR: 0.000206
+    Epoch 15/20 | Avg Distill Loss: 0.0776 | Val Acc: 99.22% | LR: 0.000146
+    Epoch 16/20 | Avg Distill Loss: 0.0746 | Val Acc: 99.42% | LR: 0.000095
+    Epoch 17/20 | Avg Distill Loss: 0.0713 | Val Acc: 99.42% | LR: 0.000054
+    Epoch 18/20 | Avg Distill Loss: 0.0588 | Val Acc: 99.32% | LR: 0.000024
+    Epoch 19/20 | Avg Distill Loss: 0.0563 | Val Acc: 99.32% | LR: 0.000006
+    Epoch 20/20 | Avg Distill Loss: 0.0548 | Val Acc: 99.32% | LR: 0.000000
+  [Distillation Farm Farm_A] Final student model loaded with best accuracy: 99.52%
+
+  --- Processing Farm: Farm_B ---
+正在初始化ResNet34模型结构，目标类别数: 5
+模型分类头已修改为支持 5 个类别。
+未提供预训练权重路径。模型将从随机权重开始训练（除了fc层）。
+    FL Round 1/10 | Clients: [2, 4, 0] -> Acc: 93.43%
+    FL Round 2/10 | Clients: [0, 3, 4] -> Acc: 95.08%
+    FL Round 3/10 | Clients: [0, 4, 2] -> Acc: 90.74%
+    FL Round 4/10 | Clients: [3, 2, 4] -> Acc: 95.43%
+    FL Round 5/10 | Clients: [0, 4, 3] -> Acc: 95.43%
+    FL Round 6/10 | Clients: [2, 3, 4] -> Acc: 95.78%
+    FL Round 7/10 | Clients: [0, 2, 4] -> Acc: 97.19%
+    FL Round 8/10 | Clients: [3, 2, 4] -> Acc: 96.60%
+    FL Round 9/10 | Clients: [4, 2, 1] -> Acc: 97.30%
+    FL Round 10/10 | Clients: [0, 2, 1] -> Acc: 96.72%
+  --- Starting Model Distillation for Farm: Farm_B ---
+学生模型 (mobilenet_v2) 已构建，支持 5 个类别。
+    Epoch 1/20 | Avg Distill Loss: 1.0820 | Val Acc: 95.90% | LR: 0.000994
+    Epoch 2/20 | Avg Distill Loss: 0.4327 | Val Acc: 96.01% | LR: 0.000976
+    Epoch 3/20 | Avg Distill Loss: 0.2931 | Val Acc: 97.66% | LR: 0.000946
+    Epoch 4/20 | Avg Distill Loss: 0.1939 | Val Acc: 98.12% | LR: 0.000905
+    Epoch 5/20 | Avg Distill Loss: 0.1590 | Val Acc: 98.24% | LR: 0.000854
+    Epoch 6/20 | Avg Distill Loss: 0.1421 | Val Acc: 98.12% | LR: 0.000794
+    Epoch 7/20 | Avg Distill Loss: 0.1190 | Val Acc: 98.59% | LR: 0.000727
+    Epoch 8/20 | Avg Distill Loss: 0.1008 | Val Acc: 98.12% | LR: 0.000655
+    Epoch 9/20 | Avg Distill Loss: 0.0929 | Val Acc: 98.12% | LR: 0.000578
+    Epoch 10/20 | Avg Distill Loss: 0.0906 | Val Acc: 98.48% | LR: 0.000500
+    Epoch 11/20 | Avg Distill Loss: 0.0852 | Val Acc: 98.59% | LR: 0.000422
+    Epoch 12/20 | Avg Distill Loss: 0.0774 | Val Acc: 98.48% | LR: 0.000345
+    Epoch 13/20 | Avg Distill Loss: 0.0804 | Val Acc: 98.12% | LR: 0.000273
+    Epoch 14/20 | Avg Distill Loss: 0.0860 | Val Acc: 98.01% | LR: 0.000206
+    Epoch 15/20 | Avg Distill Loss: 0.0804 | Val Acc: 96.48% | LR: 0.000146
+    Epoch 16/20 | Avg Distill Loss: 0.0718 | Val Acc: 97.07% | LR: 0.000095
+    Epoch 17/20 | Avg Distill Loss: 0.0619 | Val Acc: 97.66% | LR: 0.000054
+    Epoch 18/20 | Avg Distill Loss: 0.0560 | Val Acc: 97.66% | LR: 0.000024
+    Epoch 19/20 | Avg Distill Loss: 0.0541 | Val Acc: 97.66% | LR: 0.000006
+    Epoch 20/20 | Avg Distill Loss: 0.0531 | Val Acc: 97.66% | LR: 0.000000
+  [Distillation Farm Farm_B] Final student model loaded with best accuracy: 98.59%
+
+  --- Processing Farm: Farm_C ---
+正在初始化ResNet34模型结构，目标类别数: 5
+模型分类头已修改为支持 5 个类别。
+未提供预训练权重路径。模型将从随机权重开始训练（除了fc层）。
+    FL Round 1/10 | Clients: [1, 4, 3] -> Acc: 83.82%
+    FL Round 2/10 | Clients: [3, 1, 4] -> Acc: 97.86%
+    FL Round 3/10 | Clients: [4, 2, 3] -> Acc: 98.32%
+    FL Round 4/10 | Clients: [3, 4, 1] -> Acc: 98.38%
+    FL Round 5/10 | Clients: [1, 3, 4] -> Acc: 99.31%
+    FL Round 6/10 | Clients: [1, 4, 2] -> Acc: 99.25%
+    FL Round 7/10 | Clients: [4, 1, 3] -> Acc: 99.19%
+    FL Round 8/10 | Clients: [1, 4, 3] -> Acc: 99.25%
+    FL Round 9/10 | Clients: [2, 4, 3] -> Acc: 99.42%
+    FL Round 10/10 | Clients: [4, 2, 0] -> Acc: 99.25%
+  --- Starting Model Distillation for Farm: Farm_C ---
+学生模型 (mobilenet_v2) 已构建，支持 5 个类别。
+    Epoch 1/20 | Avg Distill Loss: 0.8705 | Val Acc: 97.98% | LR: 0.000994
+    Epoch 2/20 | Avg Distill Loss: 0.3185 | Val Acc: 99.31% | LR: 0.000976
+    Epoch 3/20 | Avg Distill Loss: 0.2413 | Val Acc: 99.08% | LR: 0.000946
+    Epoch 4/20 | Avg Distill Loss: 0.1749 | Val Acc: 99.54% | LR: 0.000905
+    Epoch 5/20 | Avg Distill Loss: 0.1239 | Val Acc: 99.54% | LR: 0.000854
+    Epoch 6/20 | Avg Distill Loss: 0.1149 | Val Acc: 99.36% | LR: 0.000794
+    Epoch 7/20 | Avg Distill Loss: 0.0993 | Val Acc: 99.19% | LR: 0.000727
+    Epoch 8/20 | Avg Distill Loss: 0.0920 | Val Acc: 99.31% | LR: 0.000655
+    Epoch 9/20 | Avg Distill Loss: 0.0797 | Val Acc: 99.48% | LR: 0.000578
+    Epoch 10/20 | Avg Distill Loss: 0.0661 | Val Acc: 99.60% | LR: 0.000500
+    Epoch 11/20 | Avg Distill Loss: 0.0609 | Val Acc: 99.60% | LR: 0.000422
+    Epoch 12/20 | Avg Distill Loss: 0.0543 | Val Acc: 99.60% | LR: 0.000345
+    Epoch 13/20 | Avg Distill Loss: 0.0565 | Val Acc: 99.60% | LR: 0.000273
+    Epoch 14/20 | Avg Distill Loss: 0.0561 | Val Acc: 99.48% | LR: 0.000206
+    Epoch 15/20 | Avg Distill Loss: 0.0486 | Val Acc: 99.31% | LR: 0.000146
+    Epoch 16/20 | Avg Distill Loss: 0.0431 | Val Acc: 99.54% | LR: 0.000095

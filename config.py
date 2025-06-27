@@ -71,3 +71,13 @@ GLOBAL_VALIDATION_SPLIT = 0.1 # 从所有数据中分出10%作为全局验证集
 
 # --- 9. FedProx Regularization ---
 FEDPROX_MU = 0.01                # FedProx proximal term strength (a good starting point)
+
+# --- 10. RL aggregation ---
+USE_RL_AGGREGATION = True       # 是否启用RL进行服务器聚合
+TUNE_PPO_OFFLINE = True         # 是否在每轮后进行PPO离线调优
+PPO_TUNING_EPOCHS = 50          # 离线调优的轮数
+PPO_LR_ACTOR = 0.0003
+PPO_LR_CRITIC = 0.001
+PPO_GAMMA = 0.99
+PPO_K_EPOCHS = 40
+PPO_EPS_CLIP = 0.2
