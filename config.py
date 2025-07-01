@@ -8,7 +8,8 @@ OUTPUT_DIR = './outputs'
 
 # --- 2. 模型预训练配置 ---
 # 初始源模型路径 (例如，ImageNet预训练的ResNet34)
-INITIAL_SOURCE_MODEL_PATH = './data/models/resnet34-b627a593.pth' # 确保这个路径正确
+# INITIAL_SOURCE_MODEL_PATH = './data/models/resnet18-f37072fd.pth'
+# INITIAL_SOURCE_MODEL_PATH = './data/models/resnet34-b627a593.pth'
 
 # --- 3. 顶级联邦学习参数 (农场间) ---
 NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
@@ -28,6 +29,8 @@ LEARNING_RATE_FTL = 0.001   # 联邦迁移学习的初始学习率
 LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 NUM_WORKERS = 2
+# 选择要使用的模型架构。可选项: 'resnet18', 'resnet34', 'efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'
+MODEL_ARCHITECTURE = 'mobilenet_v3_small' 
 
 # --- 6. 蒸馏参数 ---
 DISTILLATION_EPOCHS = 20

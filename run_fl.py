@@ -5,6 +5,7 @@ import os
 import numpy as np
 import copy
 import datetime
+import time
 
 # 导入我们自己的模块
 import config
@@ -12,7 +13,7 @@ from src.data_loader import get_farm_dataloaders
 from src.models import build_model
 from src.federated import farm_unit_update_fedprox, aggregate_models
 from src.distillation import distill_model
-from src.utils import evaluate_model, plot_server_fl_history
+from src.utils import evaluate_model
 from src.knowledge_base import KnowledgeBase
 from src.routing_agent import RoutingAgent
 from src.fusion import feddf_fusion # 导入FedDF
@@ -24,9 +25,12 @@ def main():
 
     # 1. 初始化
     all_farms_data_loaders, global_val_loader = get_farm_dataloaders(
-        data_dir=config.DATA_DIR, farm_class_allocation=config.FARM_CLASS_ALLOCATION,
-        client_units_per_farm=config.CLIENT_UNITS_PER_FARM, batch_size=config.BATCH_SIZE,
-        num_workers=config.NUM_WORKERS, create_global_val_set=True,
+        data_dir=config.DATA_DIR,
+        farm_class_allocation=config.FARM_CLASS_ALLOCATION,
+        client_units_per_farm=config.CLIENT_UNITS_PER_FARM,
+        batch_size=config.BATCH_SIZE,
+        num_workers=config.NUM_WORKERS,
+        create_global_val_set=True,
         global_val_split=config.GLOBAL_VALIDATION_SPLIT
     )
     farm_ids = list(all_farms_data_loaders.keys())
@@ -38,7 +42,6 @@ def main():
     # 注意：这个模型的输出头必须是全局的类别数
     server_global_model = build_model(
         num_classes=config.NUM_CLASSES_PLANTVILLAGE,
-        pretrained_path=config.INITIAL_SOURCE_MODEL_PATH
     ).to(config.DEVICE)
     
     # 记录每个农场上一轮的性能，用于计算奖励
@@ -65,21 +68,34 @@ def main():
             farm_data = all_farms_data_loaders[farm_id]
             print(f"\n  --- 开始处理农场: {farm_id} ---")
 
-            # 创建本地模型
-            local_model = build_model(num_classes=farm_data["num_classes"]).to(config.DEVICE)
+            # vvvvvvvv 新增：时间记录开始 vvvvvvvv
+            farm_start_time = time.time()
+            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-            # 加载导师模型的backbone
+            # 1. 创建本地模型结构
+            local_model = build_model(
+                num_classes=farm_data["num_classes"], 
+                use_pretrained_weights=False # 后续会加载权重，这里设为False避免重复下载
+            ).to(config.DEVICE)
+
+            # 2. 加载导师模型的backbone
             teacher_id = teacher_assignments.get(farm_id)
             if teacher_id:
                 teacher_state_dict = knowledge_base.get_model(teacher_id)
             else: # 第一轮
                 teacher_state_dict = server_global_model.state_dict()
             
-            backbone_state_dict = {k: v for k, v in teacher_state_dict.items() if k in local_model.state_dict() and 'fc' not in k}
+            # 新的、通用的代码
+            backbone_state_dict = {
+                k: v for k, v in teacher_state_dict.items() 
+                if 'fc' not in k and 'classifier' not in k
+            }
+
             local_model.load_state_dict(backbone_state_dict, strict=False)
             print(f"    已从导师 '{teacher_id or 'Initial'}' 加载backbone。")
 
-            # --- Intra-Farm FL Loop (这部分逻辑不变) ---
+            # --- 3. Intra-Farm FL Loop ---
+            print(f"    开始进行 {config.FARM_FL_ROUNDS} 轮内部联邦学习...")
             for farm_fl_round in range(config.FARM_FL_ROUNDS):
                 active_unit_indices = [i for i, loader in enumerate(farm_data["unit_loaders"]) if len(loader.dataset) > 0]
                 if not active_unit_indices: break
@@ -103,6 +119,12 @@ def main():
                 # ...
             # 训练完成后，得到最终的本地模型
             newly_trained_models[farm_id] = local_model
+
+            # vvvvvvvv 新增：时间记录结束并打印 vvvvvvvv
+            farm_end_time = time.time()
+            farm_duration = farm_end_time - farm_start_time
+            print(f"    农场 {farm_id} 本地训练完成，总耗时: {farm_duration:.2f} 秒。")
+            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
         # c. 服务器收集新模型，计算奖励，并更新知识库和RL Agent
         print("\n--- 服务器收集结果并更新策略 ---")
@@ -138,14 +160,32 @@ def main():
             teacher_model_objects = {}
             for fid in knowledge_base.get_all_farm_ids():
                 num_local_classes = len(all_farms_data_loaders[fid]['class_names'])
-                teacher = build_model(num_classes=num_local_classes).to(config.DEVICE)
+                # 确保这里也使用正确的模型架构
+                teacher = build_model(
+                    num_classes=num_local_classes, 
+                    use_pretrained_weights=False # 后续会加载权重，这里设为False避免重复下载
+                ).to(config.DEVICE)
                 teacher.load_state_dict(knowledge_base.get_model(fid))
                 
                 # 为了让所有教师模型都能对全局数据进行推理，我们需要一个hack
                 # 将它们的本地化fc层替换为能输出全局类别数的fc层
                 # 这样做是为了在FedDF中，所有教师能对同一批数据输出维度一致的logits
-                num_backbone_features = teacher.fc.in_features
-                teacher.fc = nn.Linear(num_backbone_features, config.NUM_CLASSES_PLANTVILLAGE).to(config.DEVICE)
+                # 使用辅助函数获取输入特征数，更具通用性
+                num_backbone_features = get_classifier_in_features(teacher, config.MODEL_ARCHITECTURE)
+                # 替换FC层
+                if 'resnet' in config.MODEL_ARCHITECTURE:
+                    teacher.fc = nn.Linear(num_backbone_features, config.NUM_CLASSES_PLANTVILLAGE).to(config.DEVICE)
+                elif 'efficientnet' in config.MODEL_ARCHITECTURE or 'mobilenet' in config.MODEL_ARCHITECTURE:
+                    # 对于这些模型，分类器是nn.Sequential的一部分
+                    # 我们需要找到并替换最后一个线性层
+                    if isinstance(teacher.classifier, nn.Sequential):
+                        # 遍历找到最后一个线性层
+                        for i in range(len(teacher.classifier) - 1, -1, -1):
+                            if isinstance(teacher.classifier[i], nn.Linear):
+                                teacher.classifier[i] = nn.Linear(num_backbone_features, config.NUM_CLASSES_PLANTVILLAGE).to(config.DEVICE)
+                                break
+                    else: # 如果不是Sequential, 可能是单个层
+                         teacher.classifier = nn.Linear(num_backbone_features, config.NUM_CLASSES_PLANTVILLAGE).to(config.DEVICE)
                 teacher_model_objects[fid] = teacher
                 
             if teacher_model_objects:
