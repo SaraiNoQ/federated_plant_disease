@@ -76,8 +76,25 @@ FEDPROX_MU = 0.01                # FedProx proximal term strength (a good starti
 USE_RL_AGGREGATION = True       # 是否启用RL进行服务器聚合
 TUNE_PPO_OFFLINE = True         # 是否在每轮后进行PPO离线调优
 PPO_TUNING_EPOCHS = 50          # 离线调优的轮数
+
+# --- 10. Offline Optimization Hyperparameters ---
+
+# PPO (保留或调整)
 PPO_LR_ACTOR = 0.0003
 PPO_LR_CRITIC = 0.001
 PPO_GAMMA = 0.99
 PPO_K_EPOCHS = 40
 PPO_EPS_CLIP = 0.2
+
+# A2C
+A2C_LR = 0.001
+A2C_GAMMA = 0.99
+
+# Bayesian Optimization
+BO_INITIAL_POINTS = 10 # 初始随机探索点数
+
+# Evolutionary Algorithm
+EVO_POPULATION_SIZE = 50  # 种群大小
+EVO_MUTATION_RATE = 0.1   # 变异率
+EVO_CROSSOVER_RATE = 0.8  # 交叉率
+EVO_ELITISM_COUNT = 2     # 精英保留数量
