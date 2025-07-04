@@ -1,4 +1,4 @@
-# run_fl.py (V5 - Data Generation Mode)
+# run_fl.py
 
 import torch
 import os
@@ -6,11 +6,12 @@ import numpy as np
 import copy
 import datetime
 import time
+from torch import nn
 
 # 导入我们自己的模块
 import config
 from src.data_loader import get_farm_dataloaders
-from src.models import build_model
+from src.models import build_model, get_classifier_in_features
 from src.federated import farm_unit_update_fedprox, aggregate_models
 from src.distillation import distill_model
 from src.utils import evaluate_model
@@ -42,6 +43,7 @@ def main():
     # 注意：这个模型的输出头必须是全局的类别数
     server_global_model = build_model(
         num_classes=config.NUM_CLASSES_PLANTVILLAGE,
+        use_pretrained_weights=True
     ).to(config.DEVICE)
     
     # 记录每个农场上一轮的性能，用于计算奖励
@@ -74,8 +76,8 @@ def main():
 
             # 1. 创建本地模型结构
             local_model = build_model(
-                num_classes=farm_data["num_classes"], 
-                use_pretrained_weights=False # 后续会加载权重，这里设为False避免重复下载
+                num_classes=farm_data["num_classes"],
+                use_pretrained_weights=False
             ).to(config.DEVICE)
 
             # 2. 加载导师模型的backbone
@@ -97,16 +99,23 @@ def main():
             # --- 3. Intra-Farm FL Loop ---
             print(f"    开始进行 {config.FARM_FL_ROUNDS} 轮内部联邦学习...")
             for farm_fl_round in range(config.FARM_FL_ROUNDS):
-                active_unit_indices = [i for i, loader in enumerate(farm_data["unit_loaders"]) if len(loader.dataset) > 0]
+                # 1. 选择客户端
+                active_unit_indices = [i for i, loader in enumerate(farm_data["unit_loaders"]) if
+                                       len(loader.dataset) > 0]
                 if not active_unit_indices: break
                 num_units_to_select = min(config.UNITS_PER_FARM_ROUND, len(active_unit_indices))
                 if num_units_to_select == 0: break
                 selected_unit_indices = np.random.choice(active_unit_indices, num_units_to_select, replace=False)
-                farm_round_start_model = copy.deepcopy(local_model).to(config.DEVICE)
+
+                # 2. 准备本轮开始的模型
+                # 注意：现在不需要拷贝了，因为local_model会在循环中被更新
+                # farm_round_start_model = copy.deepcopy(local_model).to(config.DEVICE) # <-- 不再需要这一行
+
+                # 3. 让选中的客户端在 local_model 的基础上进行训练
                 unit_model_updates = [
                     farm_unit_update_fedprox(
-                        model=copy.deepcopy(farm_round_start_model),
-                        global_model=farm_round_start_model,
+                        model=copy.deepcopy(local_model),  # <--- 把local_model的拷贝传给每个客户端
+                        global_model=local_model,  # <--- 把local_model本身作为FedProx的参考
                         train_loader=farm_data["unit_loaders"][unit_idx],
                         epochs=config.EPOCHS_PER_UNIT,
                         lr=config.LEARNING_RATE_FTL,
@@ -116,21 +125,37 @@ def main():
                         mu=config.FEDPROX_MU
                     ) for unit_idx in selected_unit_indices
                 ]
-                # ...
-            # 训练完成后，得到最终的本地模型
-            newly_trained_models[farm_id] = local_model
 
-            # vvvvvvvv 新增：时间记录结束并打印 vvvvvvvv
+                # 4. 聚合客户端模型
+                if unit_model_updates:
+                    aggregated_weights = aggregate_models(unit_model_updates, f"Farm {farm_id} internal")
+
+                    # 5. 更新农场的本地模型
+                    if aggregated_weights:
+                        local_model.load_state_dict(aggregated_weights)
+
+                # (可选) 可以在每轮内部聚合后打印一次精度，观察收敛过程
+                if (farm_fl_round + 1) % 5 == 0 or farm_fl_round == config.FARM_FL_ROUNDS - 1:  # 每5轮或最后一轮打印
+                    temp_metrics = evaluate_model(local_model, farm_data["val_loader"], config.DEVICE)
+                    print(
+                        f"    - 内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 客户端: {selected_unit_indices} | 聚合后精度: {temp_metrics['accuracy']:.2f}%")
+
+            # 循环结束后，评估最终的 local_model
+            local_metrics = evaluate_model(local_model, farm_data["val_loader"], config.DEVICE)
+            print(
+                f"    >>> 本地训练完成! 最终精度: {local_metrics['accuracy']:.2f}%, 损失: {local_metrics['loss']:.4f}")
+
+            # 训练完成后，得到最终的本地模型
+            # 【重要】你需要将更新后的local_model存起来，而不是之前的那个
+            newly_trained_models[farm_id] = (local_model, local_metrics)
+
             farm_end_time = time.time()
             farm_duration = farm_end_time - farm_start_time
             print(f"    农场 {farm_id} 本地训练完成，总耗时: {farm_duration:.2f} 秒。")
-            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
         # c. 服务器收集新模型，计算奖励，并更新知识库和RL Agent
         print("\n--- 服务器收集结果并更新策略 ---")
-        for farm_id, model in newly_trained_models.items():
-            # 评估性能
-            metrics = evaluate_model(model, all_farms_data_loaders[farm_id]['val_loader'], config.DEVICE)
+        for farm_id, (model, metrics) in newly_trained_models.items():
             current_acc = metrics['accuracy']
             print(f"  - {farm_id} 本轮训练后本地准确率: {current_acc:.2f}%")
             
@@ -162,8 +187,8 @@ def main():
                 num_local_classes = len(all_farms_data_loaders[fid]['class_names'])
                 # 确保这里也使用正确的模型架构
                 teacher = build_model(
-                    num_classes=num_local_classes, 
-                    use_pretrained_weights=False # 后续会加载权重，这里设为False避免重复下载
+                    num_classes=num_local_classes,
+                    use_pretrained_weights=False
                 ).to(config.DEVICE)
                 teacher.load_state_dict(knowledge_base.get_model(fid))
                 
@@ -197,10 +222,36 @@ def main():
                     device=config.DEVICE,
                     epochs=5 # FedDF的蒸馏轮数
                 )
-                
-                # 评估融合后的全局模型
+
+                print("  --- 评估融合后的全局模型 ---")
+                # 1. 在全局验证集上评估
                 global_metrics = evaluate_model(fused_server_model, global_val_loader, config.DEVICE)
-                print(f"  ** 融合后的全局模型在全局验证集上表现: Acc = {global_metrics['accuracy']:.2f}% **")
+                print(f"  ** 在[全局]验证集上表现: Acc = {global_metrics['accuracy']:.2f}% **")
+
+                # 2. 在每个农场的本地验证集上评估
+                for fid_eval, farm_data_eval in all_farms_data_loaders.items():
+                    # 为了在本地评估，需要将全局模型的头临时换成本地头
+                    temp_fused_model = copy.deepcopy(fused_server_model)
+                    num_backbone_features = get_classifier_in_features(temp_fused_model, config.MODEL_ARCHITECTURE)
+                    num_local_classes = farm_data_eval['num_classes']
+
+                    if 'resnet' in config.MODEL_ARCHITECTURE:
+                        temp_fused_model.fc = nn.Linear(num_backbone_features, num_local_classes).to(config.DEVICE)
+                    elif 'efficientnet' in config.MODEL_ARCHITECTURE or 'mobilenet' in config.MODEL_ARCHITECTURE:
+                        # 替换分类头
+                        if isinstance(temp_fused_model.classifier, nn.Sequential):
+                            for i in range(len(temp_fused_model.classifier) - 1, -1, -1):
+                                if isinstance(temp_fused_model.classifier[i], nn.Linear):
+                                    temp_fused_model.classifier[i] = nn.Linear(num_backbone_features,
+                                                                               num_local_classes).to(config.DEVICE)
+                                    break
+                        else:
+                            temp_fused_model.classifier = nn.Linear(num_backbone_features, num_local_classes).to(
+                                config.DEVICE)
+
+                    # 评估这个临时修改了头的模型
+                    local_fused_metrics = evaluate_model(temp_fused_model, farm_data_eval['val_loader'], config.DEVICE)
+                    print(f"  -- 在[{fid_eval}]本地验证集上表现: Acc = {local_fused_metrics['accuracy']:.2f}%")
                 
                 # 更新下一轮的 server_global_model，使其成为一个更强的起点
                 server_global_model = fused_server_model
@@ -208,7 +259,6 @@ def main():
                 print("  知识库中没有足够的模型来进行FedDF融合。")
 
     print("\n--- 联邦知识路由流程完成 ---")
-    # 保存最终的、经过多轮蒸馏融合的全局模型
     final_model_path = os.path.join(config.OUTPUT_DIR, 'fused_global_model_final.pth')
     torch.save(server_global_model.state_dict(), final_model_path)
     print(f"最终的融合全局模型已保存至: {final_model_path}")

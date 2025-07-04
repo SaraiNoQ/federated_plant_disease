@@ -30,7 +30,7 @@ LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 NUM_WORKERS = 2
 # 选择要使用的模型架构。可选项: 'resnet18', 'resnet34', 'efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'
-MODEL_ARCHITECTURE = 'mobilenet_v3_small' 
+MODEL_ARCHITECTURE = 'mobilenet_v3_small'
 
 # --- 6. 蒸馏参数 ---
 DISTILLATION_EPOCHS = 20

@@ -44,7 +44,7 @@ def build_model(num_classes: int, pretrained_path: str = None, use_pretrained_we
     构建并返回一个指定架构的模型。
     采用更稳健的权重加载方式，以避免分类头冲突的警告。
 
-    Args:
+    Args:use_pretrained_weights
         num_classes (int): 输出类别的数量。
         pretrained_path (str, optional): 自定义预训练权重文件的本地路径。
         use_pretrained_weights (bool): 是否使用PyTorch官方的ImageNet预训练权重。
