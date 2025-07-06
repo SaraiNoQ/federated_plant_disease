@@ -13,7 +13,6 @@ import config
 from src.data_loader import get_farm_dataloaders
 from src.models import build_model, get_classifier_in_features, build_student_model
 from src.federated import farm_unit_update_fedprox, aggregate_models, distill_unit_update
-from src.distillation import distill_model
 from src.utils import evaluate_model
 from src.knowledge_base import KnowledgeBase
 from src.routing_agent import RoutingAgent
