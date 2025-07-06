@@ -6,6 +6,7 @@ import torch.optim as optim
 from collections import OrderedDict
 import copy
 import numpy as np
+import torch.nn.functional as F
 
 
 def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id, global_model_state=None, mu=0.0):
@@ -154,3 +155,45 @@ def aggregate_models_rl(model_weights_list: list, aggregation_weights: np.ndarra
                 print(f"!! Aggregation error on layer '{key}': {e}. Skipping this layer.")
 
     return aggregated_weights
+
+
+def distill_unit_update(
+        teacher_model: nn.Module,
+        student_model: nn.Module,
+        train_loader: torch.utils.data.DataLoader,
+        epochs: int,
+        lr: float,
+        temperature: float,
+        alpha: float,
+        device: torch.device
+):
+    """
+    单个客户端上的蒸馏训练过程。
+    """
+    teacher_model.eval()
+    student_model.train()
+
+    optimizer = torch.optim.Adam(student_model.parameters(), lr=lr)
+
+    for epoch in range(epochs):
+        for inputs, hard_labels in train_loader:
+            inputs, hard_labels = inputs.to(device), hard_labels.to(device)
+            optimizer.zero_grad()
+
+            with torch.no_grad():
+                teacher_outputs = teacher_model(inputs)
+
+            student_outputs = student_model(inputs)
+
+            loss_kd = nn.KLDivLoss(reduction='batchmean')(
+                F.log_softmax(student_outputs / temperature, dim=1),
+                F.softmax(teacher_outputs / temperature, dim=1)
+            ) * (temperature * temperature)
+
+            loss_ce = nn.CrossEntropyLoss()(student_outputs, hard_labels)
+            total_loss = alpha * loss_kd + (1 - alpha) * loss_ce
+
+            total_loss.backward()
+            optimizer.step()
+
+    return student_model.state_dict()

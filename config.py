@@ -38,6 +38,15 @@ TEMPERATURE = 3.0           # 蒸馏温度
 ALPHA_DISTILLATION = 0.7    # 蒸馏损失中，软目标损失的权重
 
 # --- 7. 数据集划分参数 ---
+
+# 选择数据划分策略: 'manual' 或 'dirichlet'
+DATA_PARTITION_STRATEGY = 'dirichlet'
+# 如果策略是 'dirichlet', 这个参数控制不均衡程度。
+# alpha -> 0: 数据极度不均衡 (每个客户端可能只有一类数据)
+# alpha -> inf: 数据均衡 (IID)
+# 常见取值: 0.1, 0.5, 1.0
+DIRICHLET_ALPHA = 0.5
+
 # 这个字典定义了每个农场拥有的作物类别 (基于PlantVillage的文件夹名)
 # 确保所有38个类别都被分配，且不重叠
 FARM_CLASS_ALLOCATION = {

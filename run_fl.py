@@ -11,8 +11,8 @@ from torch import nn
 # 导入我们自己的模块
 import config
 from src.data_loader import get_farm_dataloaders
-from src.models import build_model, get_classifier_in_features
-from src.federated import farm_unit_update_fedprox, aggregate_models
+from src.models import build_model, get_classifier_in_features, build_student_model
+from src.federated import farm_unit_update_fedprox, aggregate_models, distill_unit_update
 from src.distillation import distill_model
 from src.utils import evaluate_model
 from src.knowledge_base import KnowledgeBase
@@ -27,7 +27,6 @@ def main():
     # 1. 初始化
     all_farms_data_loaders, global_val_loader = get_farm_dataloaders(
         data_dir=config.DATA_DIR,
-        farm_class_allocation=config.FARM_CLASS_ALLOCATION,
         client_units_per_farm=config.CLIENT_UNITS_PER_FARM,
         batch_size=config.BATCH_SIZE,
         num_workers=config.NUM_WORKERS,
@@ -137,10 +136,16 @@ def main():
                 # (可选) 可以在每轮内部聚合后打印一次精度，观察收敛过程
                 if (farm_fl_round + 1) % 5 == 0 or farm_fl_round == config.FARM_FL_ROUNDS - 1:  # 每5轮或最后一轮打印
                     temp_metrics = evaluate_model(local_model, farm_data["val_loader"], config.DEVICE)
+                    current_accuracy = temp_metrics['accuracy']
                     print(
                         f"    - 内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 客户端: {selected_unit_indices} | 聚合后精度: {temp_metrics['accuracy']:.2f}%")
 
-            # 循环结束后，评估最终的 local_model
+                    # 检查是否达到早停条件
+                    if current_accuracy >= 100.0:
+                        print(f"    !!! 精度已达到100%，提前终止农场 {farm_id} 的本地训练。 !!!")
+                        break  # 跳出 farm_fl_round 循环
+
+            # 农场内部循环结束后，评估最终的 local_model
             local_metrics = evaluate_model(local_model, farm_data["val_loader"], config.DEVICE)
             print(
                 f"    >>> 本地训练完成! 最终精度: {local_metrics['accuracy']:.2f}%, 损失: {local_metrics['loss']:.4f}")
@@ -148,6 +153,73 @@ def main():
             # 训练完成后，得到最终的本地模型
             # 【重要】你需要将更新后的local_model存起来，而不是之前的那个
             newly_trained_models[farm_id] = (local_model, local_metrics)
+
+            # vvvvvvvv 联邦蒸馏逻辑 vvvvvvvv
+            # 1. 检查是否触发蒸馏
+            should_distill = False
+            if local_metrics['accuracy'] >= 99.0 and not farm_data.get('distillation_done_once', False):
+                print(f"    >>> 精度首次达到99%以上，触发联邦蒸馏！")
+                should_distill = True
+                farm_data['distillation_done_once'] = True  # 标记已完成首次蒸馏
+                farm_data['distillation_cooldown'] = 0
+            elif farm_data.get('distillation_done_once', False):
+                farm_data['distillation_cooldown'] += 1
+                if farm_data['distillation_cooldown'] >= 3:
+                    print(f"    >>> 蒸馏冷却结束，触发周期性联邦蒸馏！")
+                    should_distill = True
+                    farm_data['distillation_cooldown'] = 0
+
+            # 2. 如果触发，则执行联邦蒸馏
+            if should_distill:
+                print(f"    --- 开始在农场 {farm_id} 内部进行联邦蒸馏 ---")
+
+                # a. 初始化共享的学生模型 (例如，使用MobileNetV2)
+                # 类别数与该农场的教师模型一致
+                shared_student_model = build_student_model(
+                    num_classes=farm_data["num_classes"],
+                    architecture='mobilenet_v2'
+                ).to(config.DEVICE)
+
+                # b. 进行多轮联邦蒸馏
+                num_fd_rounds = 5  # 例如，进行5轮协同蒸馏
+                for fd_round in range(num_fd_rounds):
+                    # c. 选择参与蒸馏的客户端 (这里简单地选择所有)
+                    distill_clients = [i for i, loader in enumerate(farm_data["unit_loaders"]) if
+                                       len(loader.dataset) > 0]
+
+                    student_updates = []
+                    for unit_idx in distill_clients:
+                        # 每个客户端使用自己的数据和自己的高性能模型作为教师
+                        # 在当前的共享学生模型上进行蒸馏训练
+                        # 注意：local_model 是整个农场聚合后的模型，作为所有单元的教师
+                        client_distill_loader = farm_data["unit_loaders"][unit_idx]
+
+                        updated_student_state = distill_unit_update(
+                            teacher_model=local_model,
+                            student_model=copy.deepcopy(shared_student_model),
+                            train_loader=client_distill_loader,
+                            epochs=config.EPOCHS_PER_UNIT,  # 复用训练epoch数
+                            lr=config.LEARNING_RATE_DISTILL,
+                            temperature=config.TEMPERATURE,
+                            alpha=config.ALPHA_DISTILLATION,
+                            device=config.DEVICE
+                        )
+                        student_updates.append(updated_student_state)
+
+                    # d. 聚合所有客户端更新的学生模型
+                    if student_updates:
+                        aggregated_student_weights = aggregate_models(student_updates)
+                        shared_student_model.load_state_dict(aggregated_student_weights)
+
+                    # 评估协同蒸馏后的学生模型性能
+                    student_metrics = evaluate_model(shared_student_model, farm_data["val_loader"], config.DEVICE)
+                    print(
+                        f"      FD Round {fd_round + 1}/{num_fd_rounds} | 学生模型精度: {student_metrics['accuracy']:.2f}%")
+
+                # 保存最终的、经过联邦蒸馏的轻量级模型
+                student_model_save_path = os.path.join(config.OUTPUT_DIR, f'federated_student_model_farm_{farm_id}.pth')
+                torch.save(shared_student_model.state_dict(), student_model_save_path)
+                print(f"    --- 联邦蒸馏完成，学生模型已保存至: {student_model_save_path} ---")
 
             farm_end_time = time.time()
             farm_duration = farm_end_time - farm_start_time

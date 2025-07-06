@@ -128,27 +128,46 @@ def build_model(num_classes: int, pretrained_path: str = None, use_pretrained_we
 
     return model
 
-def build_student_model(num_classes: int, architecture='mobilenet_v2'):
-    """构建轻量级学生模型。"""
-    if architecture == 'mobilenet_v2':
-        student_model = models.mobilenet_v2(pretrained=True) # 可以用ImageNet预训练的MobileNet
-        student_model.classifier[1] = nn.Linear(student_model.last_channel, num_classes)
-    elif architecture == 'shufflenet_v2': # 另一个选择
-        student_model = models.shufflenet_v2_x1_0(pretrained=True)
-        student_model.fc = nn.Linear(student_model.fc.in_features, num_classes)
-    else: # 简单自定义CNN示例
-        print(f"警告: 未知的学生模型架构 '{architecture}', 将使用一个非常简单的自定义CNN。")
+
+def build_student_model(num_classes: int, architecture: str = 'mobilenet_v2'):
+    """
+    构建一个轻量级的学生模型。
+
+    Args:
+        num_classes (int): 输出类别的数量。
+        architecture (str): 学生模型的架构。
+                            可选项: 'mobilenet_v2', 'shufflenet_v2_x0_5'.
+
+    Returns:
+        torch.nn.Module: 构建好的轻量级PyTorch模型。
+    """
+    arch_lower = architecture.lower()
+    print(f"正在构建学生模型 ({arch_lower})，支持 {num_classes} 个类别...")
+
+    if arch_lower == 'mobilenet_v2':
+        # 使用ImageNet预训练的MobileNetV2作为学生模型的起点
+        student_model = models.mobilenet_v2(pretrained=True)
+        # 获取其分类器的输入特征数
+        num_ftrs = student_model.classifier[1].in_features
+        # 替换为我们需要的分类头
+        student_model.classifier[1] = nn.Linear(num_ftrs, num_classes)
+
+    elif arch_lower == 'shufflenet_v2_x0_5':
+        # 使用更小的ShuffleNet作为学生模型
+        student_model = models.shufflenet_v2_x0_5(pretrained=True)
+        num_ftrs = student_model.fc.in_features
+        student_model.fc = nn.Linear(num_ftrs, num_classes)
+
+    else:
+        # 如果需要，可以添加更多轻量级模型，如MobileNetV3等
+        # 或者提供一个简单的自定义CNN作为默认选项
+        print(f"警告: 未知的学生模型架构 '{architecture}', 将使用一个简单的自定义CNN。")
         student_model = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=3, padding=1), nn.ReLU(), nn.MaxPool2d(2, 2),
             nn.Conv2d(16, 32, kernel_size=3, padding=1), nn.ReLU(), nn.MaxPool2d(2, 2),
             nn.Flatten(),
-            nn.Linear(32 * 56 * 56, 128), nn.ReLU(), # 输入尺寸依赖于224x224输入
+            nn.Linear(32 * 56 * 56, 128), nn.ReLU(),  # 输入尺寸依赖于224x224输入
             nn.Linear(128, num_classes)
         )
-    print(f"学生模型 ({architecture}) 已构建，支持 {num_classes} 个类别。")
-    if architecture == 'mobilenet_v2':
-        student_model = models.mobilenet_v2(pretrained=True)
-        student_model.classifier[1] = nn.Linear(student_model.last_channel, num_classes)
-    else:
-        raise NotImplementedError(f"学生模型架构 '{architecture}' 暂未实现。")
+
     return student_model
