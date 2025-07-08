@@ -32,6 +32,7 @@ NUM_WORKERS = 2
 # 选择要使用的模型架构。可选项: 'resnet18', 'resnet34', 'efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'
 MODEL_ARCHITECTURE = 'resnet34'
 DISTILL_MODEL_ARCH = 'shufflenet_v2_x0_5'
+FREEZE_LEVEL = 0.6  # 冻结60%的底层特征提取器
 
 # --- 6. 蒸馏参数 ---
 DISTILLATION_EPOCHS = 20
@@ -111,3 +112,18 @@ EVO_POPULATION_SIZE = 50  # 种群大小
 EVO_MUTATION_RATE = 0.1   # 变异率
 EVO_CROSSOVER_RATE = 0.8  # 交叉率
 EVO_ELITISM_COUNT = 2     # 精英保留数量
+
+# --- 11. 动态农场加入配置 ---
+# 定义初始参与训练的农场
+INITIAL_FARMS = ['Farm_A', 'Farm_B', 'Farm_C', 'Farm_D']
+# 定义新农场及其加入的服务器轮次
+NEW_FARMS_SCHEDULE = {
+    2: ['Farm_E'],  # 在第 2 轮服务器聚合后 (即第3轮开始时) 加入 Farm_E
+    4: ['Farm_F']   # 在第 4 轮后加入 Farm_F
+}
+
+# 确保所有在配置文件中定义的农场都被调度了
+all_scheduled_farms = set(INITIAL_FARMS)
+for farm_list in NEW_FARMS_SCHEDULE.values():
+    all_scheduled_farms.update(farm_list)
+assert len(all_scheduled_farms) == NUM_FARMS, "INITIAL_FARMS 和 NEW_FARMS_SCHEDULE 中的农场总数必须与 NUM_FARMS 匹配"

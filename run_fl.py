@@ -16,6 +16,47 @@ from src.knowledge_base import KnowledgeBase
 from src.routing_agent import RoutingAgent
 
 
+# ### 新增：一个辅助函数用于模型冻结 ###
+def freeze_layers(model, freeze_level: float):
+    """
+    冻结模型的一部分层。
+
+    Args:
+        model (nn.Module): The model to be modified.
+        freeze_level (float): 0.0 to 1.0. 0.0 means no layers are frozen.
+                              1.0 means all layers except the final classifier are frozen.
+    """
+    if freeze_level <= 0:
+        print("    冻结级别为0，所有层都可训练。")
+        return model
+
+    # 将模型的所有参数转换为一个列表
+    parameters = list(model.parameters())
+
+    # 确定要冻结的参数数量
+    # 我们总是保留最后的分类头可训练
+    # ResNet的分类头是'fc'，2个参数(weight, bias)
+    # MobileNet/EfficientNet是'classifier'里的最后一个线性层，也是2个参数
+    num_trainable_classifier = 2
+    total_params = len(parameters)
+    num_to_freeze = int((total_params - num_trainable_classifier) * freeze_level)
+
+    print(f"    模型总参数层数: {total_params}。冻结级别: {freeze_level}。")
+    print(f"    将冻结前 {num_to_freeze} 层参数。")
+
+    # 冻结指定数量的层
+    for i, param in enumerate(parameters):
+        if i < num_to_freeze:
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
+
+    # 验证冻结结果
+    # trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # print(f"    冻结后，可训练参数数量: {trainable_params}")
+
+    return model
+
 def main():
     """
     主执行函数，集成了：
@@ -88,6 +129,12 @@ def main():
                 num_classes=farm_data["num_classes"],
                 use_pretrained_weights=False
             ).to(config.DEVICE)
+
+            # ### 新增：层级冻结 ###
+            # 假设我们在config中定义了FREEZE_LEVEL
+
+            freeze_level = getattr(config, 'FREEZE_LEVEL', 0.0)  # 如果未定义则不冻结
+            local_model = freeze_layers(local_model, freeze_level)
 
             # 2. 加载“导师模型”的骨干网络 (backbone) 权重
             teacher_id = teacher_assignments.get(farm_id)
@@ -208,6 +255,7 @@ def main():
 
         # c. 服务器收集结果，计算复合奖励，并更新所有组件
         print("\n--- 服务器收集结果并更新时延感知路由策略 ---")
+        knowledge_updated = False
         for farm_id, results in newly_trained_results.items():
             expert_model = results["expert_model"]
             current_metrics = results["metrics"]
@@ -238,6 +286,13 @@ def main():
                 "accuracy": current_acc,
                 "latency": current_latency
             }
+
+            knowledge_base.update(farm_id, expert_model.state_dict())
+            knowledge_updated = True
+
+        # 如果知识库被更新（有新农场贡献了模型），则扩展动作空间
+        if knowledge_updated:
+            routing_agent.update_action_space()
 
         routing_agent.print_q_table()
 
