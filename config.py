@@ -38,6 +38,7 @@ FREEZE_LEVEL = 0.6  # 冻结60%的底层特征提取器
 DISTILLATION_EPOCHS = 20
 TEMPERATURE = 3.0           # 蒸馏温度
 ALPHA_DISTILLATION = 0.7    # 蒸馏损失中，软目标损失的权重
+DISTILL_ROUNDS = 8
 
 # --- 7. 数据集划分参数 ---
 

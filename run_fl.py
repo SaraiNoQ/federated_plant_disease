@@ -204,7 +204,7 @@ def main():
                 ).to(config.DEVICE)
 
                 # b. 进行多轮联邦蒸馏
-                num_fd_rounds = 5  # 协同蒸馏的轮数
+                num_fd_rounds = config.DISTILL_ROUNDS  # 协同蒸馏的轮数
                 for fd_round in range(num_fd_rounds):
                     distill_clients = [i for i, loader in enumerate(farm_data["unit_loaders"]) if
                                        len(loader.dataset) > 0]
