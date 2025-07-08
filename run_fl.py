@@ -64,7 +64,7 @@ def main():
     2. 农场内部的联邦学习，训练专家模型。
     3. 农场内部的联邦蒸馏，产出轻量级模型。
     """
-    print("--- 时延感知-联邦知识库与路由框架 (含联邦蒸馏) ---")
+    print("--- 层级冻结FL + 蒸馏 + 量化框架 ---")
     print(f"使用设备: {config.DEVICE}")
 
     # 1. 初始化
@@ -194,7 +194,7 @@ def main():
 
             # --- 5. 联邦蒸馏 (Federated Distillation) ---
             # 这里的触发条件可以根据你的需求调整，例如达到某个精度阈值
-            if final_expert_metrics['accuracy'] >= 95.0:  # 假设专家模型精度超过95%就进行蒸馏
+            if final_expert_metrics['accuracy'] >= 80.0:  # 假设专家模型精度超过95%就进行蒸馏
                 print(f"    --- 专家模型性能达标，开始在农场 {farm_id} 内部进行联邦蒸馏 ---")
 
                 # a. 初始化共享的轻量级学生模型
@@ -239,7 +239,73 @@ def main():
                 student_model_save_path = os.path.join(config.OUTPUT_DIR,
                                                        f'distilled_student_model_farm_{farm_id}_round_{server_round_idx + 1}.pth')
                 torch.save(shared_student_model.state_dict(), student_model_save_path)
-                print(f"    --- 联邦蒸馏完成，轻量级学生模型已保存至: {student_model_save_path} ---")
+
+                student_fp32_metrics_before_quant = evaluate_model(
+                    shared_student_model,
+                    farm_data["val_loader"],
+                    config.DEVICE
+                )
+                print(f"    --- 联邦蒸馏完成，FP32学生模型已保存至: {student_model_save_path}，模型基准精度: {student_fp32_metrics_before_quant['accuracy']:.2f}% ---")
+
+                # --- 阶段三：知识部署 (Post-Training Quantization) ---
+                print(f"    --- 开始对学生模型进行训练后量化 (PTQ) ---")
+
+                # 2. 准备用于量化的模型副本
+                #    `student_to_quantize` 在这里被定义。
+                #    它是 `shared_student_model` 的一个深拷贝，并被移动到CPU。
+                student_to_quantize = copy.deepcopy(shared_student_model).to('cpu')
+                student_to_quantize.eval()
+
+                # 3. 准备用于校准和评估的CPU数据加载器
+                #    `cpu_val_loader` 在这里被定义。
+                #    它使用和GPU验证加载器相同的底层数据集，但确保数据在CPU上。
+                cpu_val_loader = torch.utils.data.DataLoader(
+                    farm_data["val_loader"].dataset,
+                    batch_size=config.BATCH_SIZE,
+                    shuffle=False,  # 验证时不需要打乱
+                    num_workers=config.NUM_WORKERS
+                )
+
+                # 4. 配置量化器
+                student_to_quantize.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+
+                # 5. 准备量化
+                torch.quantization.prepare(student_to_quantize, inplace=True)
+
+                # 6. 校准
+                print("      正在使用验证数据进行校准...")
+                with torch.no_grad():
+                    for data, _ in cpu_val_loader:  # 使用 cpu_val_loader
+                        student_to_quantize(data)  # 使用 student_to_quantize
+                        break
+
+                # 7. 转换模型
+                torch.quantization.convert(student_to_quantize, inplace=True)
+                print("      量化完成！")
+
+                # 8. 评估量化后的模型
+                print("      正在评估INT8量化模型的性能...")
+                quantized_metrics = evaluate_model(
+                    student_to_quantize,  # 使用已量化的模型
+                    cpu_val_loader,  # 使用CPU数据加载器
+                    torch.device('cpu'),  # 在CPU上评估
+                    context="INT8 Quantized Model"
+                )
+
+                # 9. 打印对比结果
+                print("\n    ----------------------------------------------------")
+                print(f"    [性能对比] 农场 {farm_id}:")
+                print(f"    - FP32 学生模型精度: {student_fp32_metrics_before_quant['accuracy']:.2f}%")
+                print(f"    - INT8 量化模型精度: {quantized_metrics['accuracy']:.2f}%")
+                accuracy_drop = student_fp32_metrics_before_quant['accuracy'] - quantized_metrics['accuracy']
+                print(f"    - 精度下降: {accuracy_drop:.2f}%")
+                print("    ----------------------------------------------------")
+
+                # 6. 保存最终的INT8模型
+                quantized_model_path = os.path.join(config.OUTPUT_DIR,
+                                                    f'quantized_student_model_farm_{farm_id}_round_{server_round_idx + 1}.pth')
+                torch.save(student_to_quantize.state_dict(), quantized_model_path)
+                print(f"    最终可部署的INT8学生模型已保存至: {quantized_model_path}")
 
             # 记录结束时间并计算时延 (包括了FL和FD的时间)
             farm_end_time = time.time()

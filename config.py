@@ -17,9 +17,9 @@ NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
 SERVER_ROUNDS = 3         # 服务器聚合农场模型的全局轮数,增加轮数以观察RL效果
 
 # --- 4. 农场内联邦学习参数 (模拟设备/计算单元) ---
-CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)
+CLIENT_UNITS_PER_FARM = 3 # 每个农场内部的计算单元数量 (客户端)
 FARM_FL_ROUNDS = 10       # 每个农场内部联邦学习的通信轮数
-UNITS_PER_FARM_ROUND = 3  # 每轮农场内FL选择的计算单元数量
+UNITS_PER_FARM_ROUND = 2  # 每轮农场内FL选择的计算单元数量
 EPOCHS_PER_UNIT = 3       # 每个计算单元本地训练的epoch数
 
 # --- 5. 模型与训练参数 ---
@@ -32,7 +32,7 @@ NUM_WORKERS = 2
 # 选择要使用的模型架构。可选项: 'resnet18', 'resnet34', 'efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'
 MODEL_ARCHITECTURE = 'resnet34'
 DISTILL_MODEL_ARCH = 'shufflenet_v2_x0_5'
-FREEZE_LEVEL = 0.6  # 冻结60%的底层特征提取器
+FREEZE_LEVEL = 0.8  # 冻结60%的底层特征提取器
 
 # --- 6. 蒸馏参数 ---
 DISTILLATION_EPOCHS = 20
