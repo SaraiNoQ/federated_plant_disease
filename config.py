@@ -32,7 +32,7 @@ NUM_WORKERS = 2
 # 选择要使用的模型架构。可选项: 'resnet18', 'resnet34', 'efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'
 MODEL_ARCHITECTURE = 'resnet34'
 DISTILL_MODEL_ARCH = 'shufflenet_v2_x0_5'
-FREEZE_LEVEL = 0.8  # 冻结60%的底层特征提取器
+FREEZE_LEVEL = 0.6  # 冻结60%的底层特征提取器
 
 # --- 6. 蒸馏参数 ---
 DISTILLATION_EPOCHS = 20
@@ -54,16 +54,16 @@ DIRICHLET_ALPHA = 0.5
 # 确保所有38个类别都被分配，且不重叠
 FARM_CLASS_ALLOCATION = {
     'Farm_A': ['Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
-               'Blueberry___healthy', 'Cherry_(including_sour)___Powdery_mildew'],
-    'Farm_B': ['Cherry_(including_sour)___healthy', 'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot',
-               'Corn_(maize)___Common_rust_', 'Corn_(maize)___Northern_Leaf_Blight', 'Corn_(maize)___healthy'],
+               'Blueberry___healthy', 'Cherry_(including_sour)___Powdery_mildew','Cherry_(including_sour)___healthy'],
+    'Farm_B': ['Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot', 'Corn_(maize)___Common_rust_', 
+                'Corn_(maize)___Northern_Leaf_Blight', 'Corn_(maize)___healthy'],
     'Farm_C': ['Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)',
                'Grape___healthy', 'Orange___Haunglongbing_(Citrus_greening)'],
     'Farm_D': ['Peach___Bacterial_spot', 'Peach___healthy', 'Pepper,_bell___Bacterial_spot',
-               'Pepper,_bell___healthy', 'Potato___Early_blight'],
-    'Farm_E': ['Potato___Late_blight', 'Potato___healthy', 'Raspberry___healthy', 'Soybean___healthy',
-               'Squash___Powdery_mildew', 'Strawberry___Leaf_scorch'],
-    'Farm_F': ['Strawberry___healthy', 'Tomato___Bacterial_spot', 'Tomato___Early_blight',
+               'Pepper,_bell___healthy', 'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'],
+    'Farm_E': ['Raspberry___healthy', 'Soybean___healthy', 'Squash___Powdery_mildew',
+                'Strawberry___Leaf_scorch', 'Strawberry___healthy'],
+    'Farm_F': ['Tomato___Bacterial_spot', 'Tomato___Early_blight',
                'Tomato___Late_blight', 'Tomato___Leaf_Mold', 'Tomato___Septoria_leaf_spot',
                'Tomato___Spider_mites Two-spotted_spider_mite', 'Tomato___Target_Spot',
                'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus', 'Tomato___healthy']
