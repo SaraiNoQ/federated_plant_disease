@@ -18,7 +18,7 @@ SERVER_ROUNDS = 3         # 服务器聚合农场模型的全局轮数,增加轮
 
 # --- 4. 农场内联邦学习参数 (模拟设备/计算单元) ---
 CLIENT_UNITS_PER_FARM = 3 # 每个农场内部的计算单元数量 (客户端)
-FARM_FL_ROUNDS = 10       # 每个农场内部联邦学习的通信轮数
+FARM_FL_ROUNDS = 3       # 每个农场内部联邦学习的通信轮数
 UNITS_PER_FARM_ROUND = 2  # 每轮农场内FL选择的计算单元数量
 EPOCHS_PER_UNIT = 3       # 每个计算单元本地训练的epoch数
 
@@ -35,10 +35,10 @@ DISTILL_MODEL_ARCH = 'shufflenet_v2_x0_5'
 FREEZE_LEVEL = 0.6  # 冻结60%的底层特征提取器
 
 # --- 6. 蒸馏参数 ---
-DISTILLATION_EPOCHS = 20
+DISTILLATION_EPOCHS = 10
 TEMPERATURE = 3.0           # 蒸馏温度
 ALPHA_DISTILLATION = 0.7    # 蒸馏损失中，软目标损失的权重
-DISTILL_ROUNDS = 8
+DISTILL_ROUNDS = 3
 
 # --- 7. 数据集划分参数 ---
 

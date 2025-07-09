@@ -11,7 +11,7 @@ import config
 from src.data_loader import get_farm_dataloaders
 from src.models import build_model, build_student_model
 from src.federated import farm_unit_update_fedprox, aggregate_models, distill_unit_update
-from src.utils import evaluate_model
+from src.utils import evaluate_model, fuse_model
 from src.knowledge_base import KnowledgeBase
 from src.routing_agent import RoutingAgent
 
@@ -250,45 +250,45 @@ def main():
                 # --- 阶段三：知识部署 (Post-Training Quantization) ---
                 print(f"    --- 开始对学生模型进行训练后量化 (PTQ) ---")
 
-                # 2. 准备用于量化的模型副本
-                #    `student_to_quantize` 在这里被定义。
-                #    它是 `shared_student_model` 的一个深拷贝，并被移动到CPU。
+                # 1. 准备模型：必须在CPU上进行量化，且模型处于eval模式
                 student_to_quantize = copy.deepcopy(shared_student_model).to('cpu')
                 student_to_quantize.eval()
 
-                # 3. 准备用于校准和评估的CPU数据加载器
-                #    `cpu_val_loader` 在这里被定义。
-                #    它使用和GPU验证加载器相同的底层数据集，但确保数据在CPU上。
+                print("      正在融合模型模块...")
+                student_to_quantize.fuse_model()
+                
+                # 2. 配置量化器
+                # fbgemm 适用于 x86, qnnpack 适用于 ARM
+                student_to_quantize.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
+                
+                # 3. 准备量化 (插入观察者)
+                torch.quantization.prepare(student_to_quantize, inplace=True)
+
+                print("      准备用于校准和评估的CPU数据加载器...")
                 cpu_val_loader = torch.utils.data.DataLoader(
-                    farm_data["val_loader"].dataset,
+                    farm_data["val_loader"].dataset, 
                     batch_size=config.BATCH_SIZE,
-                    shuffle=False,  # 验证时不需要打乱
+                    shuffle=False, # 验证和校准时不需要打乱
                     num_workers=config.NUM_WORKERS
                 )
 
-                # 4. 配置量化器
-                student_to_quantize.qconfig = torch.quantization.get_default_qconfig('fbgemm')
-
-                # 5. 准备量化
-                torch.quantization.prepare(student_to_quantize, inplace=True)
-
-                # 6. 校准
+                # 4. 校准
                 print("      正在使用验证数据进行校准...")
                 with torch.no_grad():
                     for data, _ in cpu_val_loader:  # 使用 cpu_val_loader
                         student_to_quantize(data)  # 使用 student_to_quantize
                         break
 
-                # 7. 转换模型
-                torch.quantization.convert(student_to_quantize, inplace=True)
+                # 5. 转换模型
+                student_quantized = torch.quantization.convert(student_to_quantize, inplace=False)
                 print("      量化完成！")
 
-                # 8. 评估量化后的模型
+                # 6. 评估量化后的模型
                 print("      正在评估INT8量化模型的性能...")
                 quantized_metrics = evaluate_model(
-                    student_to_quantize,  # 使用已量化的模型
-                    cpu_val_loader,  # 使用CPU数据加载器
-                    torch.device('cpu'),  # 在CPU上评估
+                    student_to_quantize, # 现在这个就是最终的量化模型
+                    cpu_val_loader,
+                    torch.device('cpu'),
                     context="INT8 Quantized Model"
                 )
 
@@ -304,7 +304,7 @@ def main():
                 # 6. 保存最终的INT8模型
                 quantized_model_path = os.path.join(config.OUTPUT_DIR,
                                                     f'quantized_student_model_farm_{farm_id}_round_{server_round_idx + 1}.pth')
-                torch.save(student_to_quantize.state_dict(), quantized_model_path)
+                torch.save(student_quantized.state_dict(), quantized_model_path)
                 print(f"    最终可部署的INT8学生模型已保存至: {quantized_model_path}")
 
             # 记录结束时间并计算时延 (包括了FL和FD的时间)

@@ -72,3 +72,52 @@ def plot_server_fl_history(history, output_dir):
     plt.savefig(plot_save_path)
     print(f"Server FL training plot saved to: {plot_save_path}")
     plt.close()
+
+def fuse_model(model: nn.Module, is_qat: bool = False):
+    """
+    对模型进行融合，将Conv-BN或Conv-BN-ReLU融合成一个层。
+    这对量化是至关重要的。
+    
+    Args:
+        model (nn.Module): The model to be fused.
+        is_qat (bool): 是否为量化感知训练。PTQ用False。
+    """
+    # 遍历所有模块
+    for module_name, module in model.named_children():
+        # 如果有子模块，递归进去
+        if hasattr(module, "children") and len(list(module.children())) > 0:
+            fuse_model(module, is_qat)
+
+        # 检查融合模式
+        # 对于 PTQ，我们融合 Conv-BN
+        if isinstance(module, nn.Sequential):
+            # 模式: (Conv, BN, ReLU), (Conv, BN)
+            patterns = [
+                ['0', '1', '2'], # Conv, BN, ReLU
+                ['0', '1']       # Conv, BN
+            ]
+            for pattern in patterns:
+                # 检查序列中的模块类型是否匹配
+                is_match = True
+                # 确保序列长度足够
+                if len(module) != len(pattern):
+                    continue
+                
+                types_to_check = []
+                if len(pattern) == 3:
+                    types_to_check = [nn.Conv2d, nn.BatchNorm2d, nn.ReLU]
+                elif len(pattern) == 2:
+                    types_to_check = [nn.Conv2d, nn.BatchNorm2d]
+                
+                for i, module_idx in enumerate(pattern):
+                    if not isinstance(module[int(module_idx)], types_to_check[i]):
+                        is_match = False
+                        break
+                
+                if is_match:
+                    try:
+                        torch.quantization.fuse_modules(module, pattern, inplace=True)
+                    except Exception as e:
+                        # print(f"Could not fuse modules in sequence {module_name}: {e}")
+                        pass
+    return model

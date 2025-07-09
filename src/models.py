@@ -2,6 +2,7 @@
 
 import torch
 from torchvision import models
+from torchvision.models import quantization as quant_models
 import torch.nn as nn
 import config # 导入config来获取模型选择
 from torch.hub import load_state_dict_from_url
@@ -131,43 +132,58 @@ def build_model(num_classes: int, pretrained_path: str = None, use_pretrained_we
 
 def build_student_model(num_classes: int, architecture: str = 'mobilenet_v2'):
     """
-    构建一个轻量级的学生模型。
-
-    Args:
-        num_classes (int): 输出类别的数量。
-        architecture (str): 学生模型的架构。
-                            可选项: 'mobilenet_v2', 'shufflenet_v2_x0_5'.
-
-    Returns:
-        torch.nn.Module: 构建好的轻量级PyTorch模型。
+    构建一个轻量级的学生模型，并为其包装好量化存根。
     """
     arch_lower = architecture.lower()
     print(f"正在构建学生模型 ({arch_lower})，支持 {num_classes} 个类别...")
 
+    model_builder = None
     if arch_lower == 'mobilenet_v2':
-        # 使用ImageNet预训练的MobileNetV2作为学生模型的起点
-        student_model = models.mobilenet_v2(pretrained=True)
-        # 获取其分类器的输入特征数
-        num_ftrs = student_model.classifier[1].in_features
-        # 替换为我们需要的分类头
-        student_model.classifier[1] = nn.Linear(num_ftrs, num_classes)
-
+        model_builder = quant_models.mobilenet_v2
     elif arch_lower == 'shufflenet_v2_x0_5':
-        # 使用更小的ShuffleNet作为学生模型
-        student_model = models.shufflenet_v2_x0_5(pretrained=True)
-        num_ftrs = student_model.fc.in_features
-        student_model.fc = nn.Linear(num_ftrs, num_classes)
-
+        model_builder = quant_models.shufflenet_v2_x0_5
     else:
-        # 如果需要，可以添加更多轻量级模型，如MobileNetV3等
-        # 或者提供一个简单的自定义CNN作为默认选项
-        print(f"警告: 未知的学生模型架构 '{architecture}', 将使用一个简单的自定义CNN。")
-        student_model = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=3, padding=1), nn.ReLU(), nn.MaxPool2d(2, 2),
-            nn.Conv2d(16, 32, kernel_size=3, padding=1), nn.ReLU(), nn.MaxPool2d(2, 2),
-            nn.Flatten(),
-            nn.Linear(32 * 56 * 56, 128), nn.ReLU(),  # 输入尺寸依赖于224x224输入
-            nn.Linear(128, num_classes)
-        )
+        raise NotImplementedError(f"学生模型架构 '{architecture}' 暂不支持。")
 
-    return student_model
+    # 构建原始模型
+    original_model = model_builder(pretrained=True)
+
+    # 替换分类头
+    if 'mobilenet' in arch_lower:
+        num_ftrs = original_model.classifier[1].in_features
+        original_model.classifier[1] = nn.Linear(num_ftrs, num_classes)
+    elif 'shufflenet' in arch_lower:
+        num_ftrs = original_model.fc.in_features
+        original_model.fc = nn.Linear(num_ftrs, num_classes)
+
+    # vvvvvvvv 核心修正 vvvvvvvv
+    # 创建一个新的类来包装模型，而不是使用 nn.Sequential
+    # 这样可以保留原始模型的 forward 方法和所有属性
+    class QuantizableModel(nn.Module):
+        def __init__(self, model_fp32):
+            super(QuantizableModel, self).__init__()
+            self.quant = torch.quantization.QuantStub()
+            self.dequant = torch.quantization.DeQuantStub()
+            self.model_fp32 = model_fp32
+
+        def forward(self, x):
+            x = self.quant(x)
+            x = self.model_fp32(x)
+            x = self.dequant(x)
+            return x
+
+        def fuse_model(self):
+            # 遍历模型并融合
+            # 对于 torchvision.models.quantization.* 的模型，
+            # 它们通常有一个 .fuse_model() 方法
+            if hasattr(self.model_fp32, 'fuse_model'):
+                self.model_fp32.fuse_model()
+            else:
+                # 如果没有，我们可以用一个简单的通用方法
+                print("模型没有 .fuse_model() 方法，尝试通用融合...")
+                torch.quantization.fuse_modules(self.model_fp32, [['conv1', 'bn1', 'relu']], inplace=True)
+                # 这里可以根据需要添加更多融合模式
+    
+    # 用新类包装模型
+    quantizable_wrapper = QuantizableModel(original_model)
+    return quantizable_wrapper
