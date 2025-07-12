@@ -124,12 +124,19 @@ class MetaControllerA2C:
             discounted_reward = reward + self.gamma * discounted_reward
             returns.insert(0, discounted_reward)
 
-        returns = torch.tensor(returns).to(self.device)
-        # 对returns进行标准化
-        returns = (returns - returns.mean()) / (returns.std() + 1e-5)
+        returns = torch.tensor(returns, dtype=torch.float32).to(self.device)
+        # 对returns进行标准化 (这一步是可选的，但通常能稳定训练)
+        if len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-5)
 
-        log_probs = torch.stack(self.log_probs)
-        state_values = torch.stack(self.state_values).squeeze()
+        # 把 log_probs 和 state_values 列表也转换成张量
+        log_probs = torch.stack(self.log_probs).to(self.device)
+        state_values = torch.cat(self.state_values).to(self.device)  # 使用cat代替stack，如果state_values已经是(1,)的张量
+
+        # 确保 state_values 是正确的形状
+        # state_values 应该是 (N,) or (N, 1), returns 应该是 (N,)
+        if state_values.dim() > 1:
+            state_values = state_values.squeeze()
 
         # 计算优势
         advantage = returns - state_values.detach()

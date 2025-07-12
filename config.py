@@ -14,25 +14,26 @@ OUTPUT_DIR = './outputs'
 # --- 3. 顶级联邦学习参数 (农场间) ---
 NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
 # SERVER_ROUNDS: 控制服务器聚合农场模型的轮数，如果只有一轮微调和蒸馏，则设为1
-SERVER_ROUNDS = 3         # 服务器聚合农场模型的全局轮数,增加轮数以观察RL效果
+SERVER_ROUNDS = 10         # 服务器聚合农场模型的全局轮数,增加轮数以观察RL效果
 
 # --- 4. 农场内联邦学习参数 (模拟设备/计算单元) ---
-CLIENT_UNITS_PER_FARM = 3 # 每个农场内部的计算单元数量 (客户端)
-FARM_FL_ROUNDS = 3       # 每个农场内部联邦学习的通信轮数
-UNITS_PER_FARM_ROUND = 2  # 每轮农场内FL选择的计算单元数量
+CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)
+FARM_FL_ROUNDS = 10       # 每个农场内部联邦学习的通信轮数
+UNITS_PER_FARM_ROUND = 4  # 每轮农场内FL选择的计算单元数量
 EPOCHS_PER_UNIT = 3       # 每个计算单元本地训练的epoch数
 
 # --- 5. 模型与训练参数 ---
 NUM_CLASSES_PLANTVILLAGE = 38 # PlantVillage总类别数
-BATCH_SIZE = 32
-LEARNING_RATE_FTL = 0.001   # 联邦迁移学习的初始学习率
+BATCH_SIZE = 128
+LEARNING_RATE_FTL = 0.004   # 联邦迁移学习的初始学习率
 LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = 2
+NUM_WORKERS = 6
 # 选择要使用的模型架构。可选项: 'resnet18', 'resnet34', 'efficientnet_b0', 'mobilenet_v3_small', 'mobilenet_v2'
 MODEL_ARCHITECTURE = 'resnet34'
-DISTILL_MODEL_ARCH = 'shufflenet_v2_x0_5'
-FREEZE_LEVEL = 0.6  # 冻结60%的底层特征提取器
+#可选项: 'shufflenet_v2_x0_5', 'mobilenet_v2'
+DISTILL_MODEL_ARCH = 'mobilenet_v2'
+FREEZE_LEVEL = 0.5  # 冻结60%的底层特征提取器
 
 # --- 6. 蒸馏参数 ---
 DISTILLATION_EPOCHS = 10
@@ -94,11 +95,11 @@ PPO_TUNING_EPOCHS = 50          # 离线调优的轮数
 
 # --- 11. 动态农场加入配置 ---
 # 定义初始参与训练的农场
-INITIAL_FARMS = ['Farm_A', 'Farm_B', 'Farm_C', 'Farm_D']
+INITIAL_FARMS = ['Farm_A', 'Farm_B', 'Farm_C', 'Farm_D', 'Farm_E', 'Farm_F']
 # 定义新农场及其加入的服务器轮次
 NEW_FARMS_SCHEDULE = {
-    2: ['Farm_E'],  # 在第 2 轮服务器聚合后 (即第3轮开始时) 加入 Farm_E
-    4: ['Farm_F']   # 在第 4 轮后加入 Farm_F
+    # 2: ['Farm_E'],  # 在第 2 轮服务器聚合后 (即第3轮开始时) 加入 Farm_E
+    # 4: ['Farm_F']   # 在第 4 轮后加入 Farm_F
 }
 
 # 确保所有在配置文件中定义的农场都被调度了
