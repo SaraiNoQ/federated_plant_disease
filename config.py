@@ -92,28 +92,6 @@ USE_RL_AGGREGATION = True       # 是否启用RL进行服务器聚合
 TUNE_PPO_OFFLINE = True         # 是否在每轮后进行PPO离线调优
 PPO_TUNING_EPOCHS = 50          # 离线调优的轮数
 
-# --- 10. Offline Optimization Hyperparameters ---
-
-# PPO (保留或调整)
-PPO_LR_ACTOR = 0.0003
-PPO_LR_CRITIC = 0.001
-PPO_GAMMA = 0.99
-PPO_K_EPOCHS = 40
-PPO_EPS_CLIP = 0.2
-
-# A2C
-A2C_LR = 0.001
-A2C_GAMMA = 0.99
-
-# Bayesian Optimization
-BO_INITIAL_POINTS = 10 # 初始随机探索点数
-
-# Evolutionary Algorithm
-EVO_POPULATION_SIZE = 50  # 种群大小
-EVO_MUTATION_RATE = 0.1   # 变异率
-EVO_CROSSOVER_RATE = 0.8  # 交叉率
-EVO_ELITISM_COUNT = 2     # 精英保留数量
-
 # --- 11. 动态农场加入配置 ---
 # 定义初始参与训练的农场
 INITIAL_FARMS = ['Farm_A', 'Farm_B', 'Farm_C', 'Farm_D']
@@ -128,3 +106,23 @@ all_scheduled_farms = set(INITIAL_FARMS)
 for farm_list in NEW_FARMS_SCHEDULE.values():
     all_scheduled_farms.update(farm_list)
 assert len(all_scheduled_farms) == NUM_FARMS, "INITIAL_FARMS 和 NEW_FARMS_SCHEDULE 中的农场总数必须与 NUM_FARMS 匹配"
+
+# --- 12. 分层强化学习 (HRL) 配置 ---
+# --- 12.1 高层RL (Meta-Controller) ---
+META_RL_ALGO = 'A2C'  # 'A2C' or 'PPO'
+# 动作空间: EXPLOIT, TRANSFER_IN from Farm_A, B, ...
+# 奖励函数权重
+W_EFFICIENCY_GLOBAL = 1.0  # 全局效率提升的权重
+W_DIVERSITY_GLOBAL = 0.2   # 全局知识多样性的权重
+# 效率函数内部权重
+W_ACC_GLOBAL = 1.0         # 平均准确率的权重
+W_LAT_GLOBAL = 0.05        # 平均时延的权重
+
+# --- 12.2 低层RL (Executor) ---
+# 每个农场内部的客户端选择器
+LOCAL_RL_ALGO = 'UCB'      # 'UCB' or 'Thompson'
+LOCAL_RL_EXPLORATION = 2.0 # UCB的探索因子C
+
+# --- 12.3 HRL 耦合参数 ---
+# 'TRANSFER_IN' 指令的预算，即知识迁移损失在总损失中的占比
+TRANSFER_BUDGET = 0.2

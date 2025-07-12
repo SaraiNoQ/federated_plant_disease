@@ -1,19 +1,19 @@
 # run_fl.py (版本：时延感知RL + 联邦蒸馏)
-
 import torch
 import os
 import numpy as np
 import copy
 import time
+from torch.utils.data import DataLoader
 
 # 导入我们自己的模块
 import config
 from src.data_loader import get_farm_dataloaders
 from src.models import build_model, build_student_model
-from src.federated import farm_unit_update_fedprox, aggregate_models, distill_unit_update
-from src.utils import evaluate_model, fuse_model
+from src.federated import local_distill_update, aggregate_models
+from src.utils import evaluate_model, print_metrics, quantize_and_evaluate_model
 from src.knowledge_base import KnowledgeBase
-from src.routing_agent import RoutingAgent
+from src.rl_agents import MetaControllerA2C, LocalExecutorUCB
 
 
 # ### 新增：一个辅助函数用于模型冻结 ###
@@ -76,296 +76,206 @@ def main():
         create_global_val_set=config.CREATE_GLOBAL_VALIDATION_SET,
         global_val_split=config.GLOBAL_VALIDATION_SPLIT
     )
-    farm_ids = list(all_farms_data_loaders.keys())
+    active_farm_ids = list(config.INITIAL_FARMS)
 
     # 知识库，用于存储每个农场的专家模型
     knowledge_base = KnowledgeBase(config.OUTPUT_DIR)
-    # 强化学习路由代理
-    routing_agent = RoutingAgent(farm_ids)
 
-    # 准备一个初始的、在ImageNet上预训练的模型，仅用于第一轮的冷启动
-    initial_source_model = build_model(
-        num_classes=config.NUM_CLASSES_PLANTVILLAGE,  # 类别数在这里不重要，因为我们只用backbone
-        use_pretrained_weights=True
-    ).to(config.DEVICE)
-    initial_source_model_state = initial_source_model.state_dict()
+    # --- HRL 初始化 ---
+    # 高层RL Agent
+    # 状态维度可以简化，例如: [avg_acc, avg_f1, avg_loss, diversity_metric]
+    state_dim = 4
+    meta_controller = MetaControllerA2C(
+        num_farms=config.NUM_FARMS,
+        state_dim=state_dim,
+        device=config.DEVICE
+    )
 
-    # 记录每个农场上一轮的性能，用于计算奖励
-    last_farm_performance = {
-        fid: {"accuracy": 0.0, "latency": 0.0} for fid in farm_ids
-    }
+    # 为每个农场创建低层RL Agent和本地教师模型
+    farm_executors = {}
+    local_teachers = {}
+    for farm_id in config.FARM_CLASS_ALLOCATION.keys():
+        num_clients = config.CLIENT_UNITS_PER_FARM
+        farm_executors[farm_id] = LocalExecutorUCB(num_clients, config.LOCAL_RL_EXPLORATION)
+        # 初始化每个客户端私有的教师模型
+        farm_data = all_farms_data_loaders[farm_id]
+        client_teachers = [
+            build_model(num_classes=farm_data["num_classes"], use_pretrained_weights=True).to(config.DEVICE)
+            for _ in range(num_clients)
+        ]
+        local_teachers[farm_id] = client_teachers
 
-    # 定义复合奖励函数的权重
-    W_ACCURACY = 1.0  # 对每1%的准确率提升，奖励1.0分
-    W_LATENCY = 0.05  # 对每1秒的训练时延，惩罚0.05分
+    # 全局状态追踪
+    last_global_efficiency = 0.0
+    last_global_diversity = 0.0
 
     # 2. 主循环：多轮知识路由与本地优化
     for server_round_idx in range(config.SERVER_ROUNDS):
         print(f"\n\n K{'=' * 10} 全局知识路由轮次: {server_round_idx + 1}/{config.SERVER_ROUNDS} K{'=' * 10}")
 
-        teacher_assignments = {}
-        # a. 服务器为每个农场做路由决策 (如果知识库非空)
-        if len(knowledge_base) > 0:
-            print("--- 慢尺度RL: 正在进行知识路由决策 ---")
-            for farm_id in farm_ids:
-                teacher_farm_id = routing_agent.choose_action(farm_id)
-                teacher_assignments[farm_id] = teacher_farm_id
-                print(f"  - 为农场 {farm_id} 分配的导师来自: {teacher_farm_id}")
+        # --- 高层决策阶段 ---
+        # 1. 构建高层状态
+        # (这是一个简化的例子，实际可以更复杂)
+        all_metrics = [m['metrics'] for m in knowledge_base.get_all_models()]
+        if all_metrics:
+            avg_acc = np.mean([m['accuracy'] for m in all_metrics])
+            avg_f1 = np.mean([m['f1_score'] for m in all_metrics])
+            avg_loss = np.mean([m['loss'] for m in all_metrics])
+            # 简化多样性：模型参数的方差
+            all_params = [torch.nn.utils.parameters_to_vector(m['state_dict'].values()) for m in
+                          knowledge_base.get_all_models()]
+            diversity = torch.stack(all_params).var().item() if len(all_params) > 1 else 0.0
         else:
-            print("--- 知识库为空，所有农场从初始ImageNet模型开始 ---")
+            avg_acc, avg_f1, avg_loss, diversity = 0, 0, 0, 0
 
-        newly_trained_results = {}
+        current_state = [avg_acc / 100, avg_f1, avg_loss, diversity]
 
-        # b. 各个农场并行进行内部联邦学习和蒸馏
-        for farm_id in farm_ids:
-            farm_data = all_farms_data_loaders[farm_id]
-            print(f"\n  --- 开始处理农场: {farm_id} ---")
+        # 2. 为每个活跃农场生成指令
+        farm_directives = {}
+        print("--- 高层Agent正在发布指令 ---")
+        for farm_id in active_farm_ids:
+            action = meta_controller.select_action(current_state)
+            if action == 0 or len(knowledge_base) == 0:
+                directive = {'role': 'EXPLOIT'}
+                print(f"  - 指令 to {farm_id}: {directive}")
+            else:
+                # 选择一个非自身的教师
+                teacher_options = [fid for fid in knowledge_base.get_all_farm_ids() if fid != farm_id]
+                if not teacher_options:
+                    directive = {'role': 'EXPLOIT'}
+                else:
+                    teacher_id = teacher_options[(action - 1) % len(teacher_options)]
+                    directive = {'role': 'TRANSFER_IN', 'source': teacher_id, 'budget': config.TRANSFER_BUDGET}
+                print(f"  - 指令 to {farm_id}: {directive}")
+            farm_directives[farm_id] = directive
 
-            # 记录开始时间
+        # --- 低层执行阶段 ---
+        round_latencies = []
+        newly_trained_student_models = {}
+
+        for farm_id in active_farm_ids:
+            print(f"\n  --- 农场 {farm_id} 开始执行指令 (低层任务) ---")
             farm_start_time = time.time()
+            farm_data = all_farms_data_loaders[farm_id]
+            directive = farm_directives[farm_id]
 
-            # 1. 创建本地模型结构 (分类头匹配该农场的类别数)
-            local_model = build_model(
+            # 准备本轮的初始学生模型和教师模型
+            farm_student_model = build_student_model(
                 num_classes=farm_data["num_classes"],
-                use_pretrained_weights=False
+                architecture=config.DISTILL_MODEL_ARCH
             ).to(config.DEVICE)
 
-            # ### 新增：层级冻结 ###
-            # 假设我们在config中定义了FREEZE_LEVEL
-
-            freeze_level = getattr(config, 'FREEZE_LEVEL', 0.0)  # 如果未定义则不冻结
-            local_model = freeze_layers(local_model, freeze_level)
-
-            # 2. 加载“导师模型”的骨干网络 (backbone) 权重
-            teacher_id = teacher_assignments.get(farm_id)
-            if teacher_id:
-                teacher_state_dict = knowledge_base.get_model(teacher_id)
-                source_log = f"导师 '{teacher_id}'"
-            else:  # 仅在第一轮发生
-                teacher_state_dict = initial_source_model_state
-                source_log = "初始ImageNet模型"
-
-            backbone_state_dict = {
-                k: v for k, v in teacher_state_dict.items()
-                if 'fc' not in k and 'classifier' not in k
-            }
-            local_model.load_state_dict(backbone_state_dict, strict=False)
-            print(f"    已从 {source_log} 加载骨干网络。")
-
-            # --- 3. 农场内部的联邦学习循环，训练专家模型 ---
-            print(f"    开始进行 {config.FARM_FL_ROUNDS} 轮内部联邦学习 (训练专家模型)...")
-            for farm_fl_round in range(config.FARM_FL_ROUNDS):
-                active_unit_indices = [i for i, loader in enumerate(farm_data["unit_loaders"]) if
-                                       len(loader.dataset) > 0]
-                if not active_unit_indices:
-                    print("    农场内没有可用的客户端，跳过内部FL。")
-                    break
-
-                num_units_to_select = min(config.UNITS_PER_FARM_ROUND, len(active_unit_indices))
-                selected_unit_indices = np.random.choice(active_unit_indices, num_units_to_select, replace=False)
-
-                unit_model_updates = [
-                    farm_unit_update_fedprox(
-                        model=copy.deepcopy(local_model),
-                        global_model=local_model,
-                        train_loader=farm_data["unit_loaders"][unit_idx],
-                        epochs=config.EPOCHS_PER_UNIT,
-                        lr=config.LEARNING_RATE_FTL,
-                        device=config.DEVICE,
-                        farm_id=farm_id,
-                        unit_id=unit_idx,
-                        mu=config.FEDPROX_MU
-                    ) for unit_idx in selected_unit_indices
-                ]
-
-                if unit_model_updates:
-                    aggregated_weights = aggregate_models(unit_model_updates, f"Farm {farm_id} internal")
-                    if aggregated_weights:
-                        local_model.load_state_dict(aggregated_weights)
-
-                if (farm_fl_round + 1) % 5 == 0 or farm_fl_round == config.FARM_FL_ROUNDS - 1:
-                    temp_metrics = evaluate_model(local_model, farm_data["val_loader"], config.DEVICE)
-                    print(
-                        f"    - 内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 专家模型精度: {temp_metrics['accuracy']:.2f}%")
-
-            # --- 4. 本地专家模型训练结束，评估最终模型 ---
-            final_expert_metrics = evaluate_model(local_model, farm_data["val_loader"], config.DEVICE)
-            print(f"    >>> 专家模型训练完成! 最终本地精度: {final_expert_metrics['accuracy']:.2f}%")
-
-            # --- 5. 联邦蒸馏 (Federated Distillation) ---
-            # 这里的触发条件可以根据你的需求调整，例如达到某个精度阈值
-            if final_expert_metrics['accuracy'] >= 80.0:  # 假设专家模型精度超过95%就进行蒸馏
-                print(f"    --- 专家模型性能达标，开始在农场 {farm_id} 内部进行联邦蒸馏 ---")
-
-                # a. 初始化共享的轻量级学生模型
-                shared_student_model = build_student_model(
-                    num_classes=farm_data["num_classes"],
-                    architecture=config.DISTILL_MODEL_ARCH  # 或其他轻量级模型
+            # 如果是TRANSFER_IN，加载教师学生模型
+            transfer_teacher_student_model = None
+            if directive['role'] == 'TRANSFER_IN':
+                teacher_info = knowledge_base.get_model(directive['source'])
+                # 注意：知识库现在存的是学生模型
+                transfer_teacher_student_model = build_student_model(
+                    num_classes=all_farms_data_loaders[directive['source']]["num_classes"],
+                    architecture=config.DISTILL_MODEL_ARCH
                 ).to(config.DEVICE)
+                transfer_teacher_student_model.load_state_dict(teacher_info['state_dict'])
 
-                # b. 进行多轮联邦蒸馏
-                num_fd_rounds = config.DISTILL_ROUNDS  # 协同蒸馏的轮数
-                for fd_round in range(num_fd_rounds):
-                    distill_clients = [i for i, loader in enumerate(farm_data["unit_loaders"]) if
-                                       len(loader.dataset) > 0]
-                    student_updates = []
+            # 内部FedMD循环
+            for farm_fl_round in range(config.FARM_FL_ROUNDS):
+                # 低层RL选择客户端
+                selected_client_indices = farm_executors[farm_id].select_clients(config.UNITS_PER_FARM_ROUND)
 
-                    for unit_idx in distill_clients:
-                        # 教师是刚刚训练好的、整个农场的专家模型 (local_model)
-                        # 学生是共享的轻量级模型 (shared_student_model)
-                        client_distill_loader = farm_data["unit_loaders"][unit_idx]
+                student_updates = []
+                client_rewards = []
+                for client_idx in selected_client_indices:
+                    # 获取该客户端私有的教师模型
+                    private_teacher = local_teachers[farm_id][client_idx]
 
-                        updated_student_state = distill_unit_update(
-                            teacher_model=local_model,
-                            student_model=copy.deepcopy(shared_student_model),
-                            train_loader=client_distill_loader,
-                            epochs=config.EPOCHS_PER_UNIT,
-                            lr=config.LEARNING_RATE_DISTILL,
-                            temperature=config.TEMPERATURE,
-                            alpha=config.ALPHA_DISTILLATION,
-                            device=config.DEVICE
-                        )
-                        student_updates.append(updated_student_state)
+                    # 客户端本地蒸馏
+                    updated_student_dict = local_distill_update(
+                        local_teacher_model=private_teacher,
+                        student_model_to_train=copy.deepcopy(farm_student_model),
+                        train_loader=farm_data["unit_loaders"][client_idx],
+                        epochs=config.EPOCHS_PER_UNIT,
+                        lr=config.LEARNING_RATE_DISTILL,
+                        device=config.DEVICE,
+                        # HRL参数
+                        transfer_teacher_model=transfer_teacher_student_model,
+                        transfer_budget=directive.get('budget', 0.0),
+                        # 标准蒸馏参数
+                        temperature=config.TEMPERATURE,
+                        alpha=config.ALPHA_DISTILLATION,
+                    )
+                    student_updates.append(updated_student_dict)
 
-                    if student_updates:
-                        aggregated_student_weights = aggregate_models(student_updates, f"Farm {farm_id} student agg")
-                        shared_student_model.load_state_dict(aggregated_student_weights)
+                    # 计算该客户端的内在奖励 (简化版)
+                    temp_student = copy.deepcopy(farm_student_model)
+                    temp_student.load_state_dict(updated_student_dict)
+                    metrics = evaluate_model(temp_student, farm_data["val_loader"], config.DEVICE)
+                    client_rewards.append(metrics['accuracy'])  # 奖励=该更新带来的精度
 
-                    student_metrics = evaluate_model(shared_student_model, farm_data["val_loader"], config.DEVICE)
-                    print(
-                        f"      FD Round {fd_round + 1}/{num_fd_rounds} | 学生模型精度: {student_metrics['accuracy']:.2f}%")
+                # 更新低层RL Agent
+                farm_executors[farm_id].update(selected_client_indices, client_rewards)
 
-                # c. 保存最终的、经过联邦蒸馏的轻量级学生模型
-                student_model_save_path = os.path.join(config.OUTPUT_DIR,
-                                                       f'distilled_student_model_farm_{farm_id}_round_{server_round_idx + 1}.pth')
-                torch.save(shared_student_model.state_dict(), student_model_save_path)
+                # 聚合学生模型
+                if student_updates:
+                    aggregated_weights = aggregate_models(student_updates, f"Farm {farm_id} Student Models")
+                    farm_student_model.load_state_dict(aggregated_weights)
 
-                student_fp32_metrics_before_quant = evaluate_model(
-                    shared_student_model,
-                    farm_data["val_loader"],
-                    config.DEVICE
-                )
-                print(f"    --- 联邦蒸馏完成，FP32学生模型已保存至: {student_model_save_path}，模型基准精度: {student_fp32_metrics_before_quant['accuracy']:.2f}% ---")
+                final_metrics = evaluate_model(farm_student_model, farm_data["val_loader"], config.DEVICE)
+                print_metrics(final_metrics, f"    内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 学生模型")
 
-                # --- 阶段三：知识部署 (Post-Training Quantization) ---
-                print(f"    --- 开始对学生模型进行训练后量化 (PTQ) ---")
-
-                # 1. 准备模型：必须在CPU上进行量化，且模型处于eval模式
-                student_to_quantize = copy.deepcopy(shared_student_model).to('cpu')
-                student_to_quantize.eval()
-
-                print("      正在融合模型模块...")
-                student_to_quantize.fuse_model()
-                
-                # 2. 配置量化器
-                # fbgemm 适用于 x86, qnnpack 适用于 ARM
-                student_to_quantize.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
-                
-                # 3. 准备量化 (插入观察者)
-                torch.quantization.prepare(student_to_quantize, inplace=True)
-
-                print("      准备用于校准和评估的CPU数据加载器...")
-                cpu_val_loader = torch.utils.data.DataLoader(
-                    farm_data["val_loader"].dataset, 
-                    batch_size=config.BATCH_SIZE,
-                    shuffle=False, # 验证和校准时不需要打乱
-                    num_workers=config.NUM_WORKERS
-                )
-
-                # 4. 校准
-                print("      正在使用验证数据进行校准...")
-                with torch.no_grad():
-                    for data, _ in cpu_val_loader:  # 使用 cpu_val_loader
-                        student_to_quantize(data)  # 使用 student_to_quantize
-                        break
-
-                # 5. 转换模型
-                student_quantized = torch.quantization.convert(student_to_quantize, inplace=False)
-                print("      量化完成！")
-
-                # 6. 评估量化后的模型
-                print("      正在评估INT8量化模型的性能...")
-                quantized_metrics = evaluate_model(
-                    student_to_quantize, # 现在这个就是最终的量化模型
-                    cpu_val_loader,
-                    torch.device('cpu'),
-                    context="INT8 Quantized Model"
-                )
-
-                # 9. 打印对比结果
-                print("\n    ----------------------------------------------------")
-                print(f"    [性能对比] 农场 {farm_id}:")
-                print(f"    - FP32 学生模型精度: {student_fp32_metrics_before_quant['accuracy']:.2f}%")
-                print(f"    - INT8 量化模型精度: {quantized_metrics['accuracy']:.2f}%")
-                accuracy_drop = student_fp32_metrics_before_quant['accuracy'] - quantized_metrics['accuracy']
-                print(f"    - 精度下降: {accuracy_drop:.2f}%")
-                print("    ----------------------------------------------------")
-
-                # 6. 保存最终的INT8模型
-                quantized_model_path = os.path.join(config.OUTPUT_DIR,
-                                                    f'quantized_student_model_farm_{farm_id}_round_{server_round_idx + 1}.pth')
-                torch.save(student_quantized.state_dict(), quantized_model_path)
-                print(f"    最终可部署的INT8学生模型已保存至: {quantized_model_path}")
-
-            # 记录结束时间并计算时延 (包括了FL和FD的时间)
+            # 农场本轮任务结束
             farm_end_time = time.time()
             latency = farm_end_time - farm_start_time
-            print(f"    农场 {farm_id} 本轮训练总耗时 (时延): {latency:.2f} 秒。")
+            round_latencies.append(latency)
 
-            # 存储所有结果，注意这里用于RL奖励的是专家模型的性能
-            newly_trained_results[farm_id] = {
-                "expert_model": local_model,
-                "metrics": final_expert_metrics,
-                "latency": latency
+            final_farm_metrics = evaluate_model(farm_student_model, farm_data["val_loader"], config.DEVICE)
+            print_metrics(final_farm_metrics, f">>> 农场 {farm_id} 最终学生模型")
+
+            # --- 量化与评估 ---
+            quantized_state_dict = quantize_and_evaluate_model(
+                farm_student_model, farm_data["val_loader"], config.DEVICE
+            )
+
+            # 保存结果，准备更新高层RL
+            newly_trained_student_models[farm_id] = {
+                'state_dict': farm_student_model.state_dict(),
+                'metrics': final_farm_metrics,
+                'latency': latency
             }
 
-        # c. 服务器收集结果，计算复合奖励，并更新所有组件
-        print("\n--- 服务器收集结果并更新时延感知路由策略 ---")
-        knowledge_updated = False
-        for farm_id, results in newly_trained_results.items():
-            expert_model = results["expert_model"]
-            current_metrics = results["metrics"]
-            current_latency = results["latency"]
+        # --- 高层奖励计算与更新 ---
+        # 1. 更新知识库
+        for farm_id, model_info in newly_trained_student_models.items():
+            knowledge_base.update(farm_id, model_info)
 
-            current_acc = current_metrics['accuracy']
-            last_acc = last_farm_performance[farm_id]['accuracy']
+        # 2. 计算高层奖励
+        current_metrics = [m['metrics'] for m in knowledge_base.get_all_models()]
+        current_avg_acc = np.mean([m['accuracy'] for m in current_metrics]) if current_metrics else 0
+        current_avg_lat = np.mean(round_latencies) if round_latencies else 0
 
-            print(f"  - 收到来自 {farm_id} 的新专家模型。 Acc: {current_acc:.2f}%, Latency: {current_latency:.2f}s")
+        # 计算效率
+        current_efficiency = config.W_ACC_GLOBAL * current_avg_acc - config.W_LAT_GLOBAL * current_avg_lat
+        efficiency_gain = current_efficiency - last_global_efficiency
 
-            # 计算复合奖励
-            accuracy_gain = current_acc - last_acc
-            reward = (W_ACCURACY * accuracy_gain) - (W_LATENCY * current_latency)
+        # 计算多样性
+        all_params = [torch.nn.utils.parameters_to_vector(m['state_dict'].values()) for m in
+                      knowledge_base.get_all_models()]
+        current_diversity = torch.stack(all_params).var().item() if len(all_params) > 1 else 0.0
+        diversity_gain = current_diversity - last_global_diversity
 
-            # 更新RL Agent的Q-table
-            teacher_id = teacher_assignments.get(farm_id)
-            if teacher_id:
-                routing_agent.update(farm_id, teacher_id, reward)
-                print(
-                    f"    - RoutingAgent更新: C={farm_id[-1]}, T={teacher_id[-1]}, AccGain={accuracy_gain:.2f}, Latency={current_latency:.2f}s => Reward={reward:.2f}")
+        # 最终高层奖励
+        meta_reward = config.W_EFFICIENCY_GLOBAL * efficiency_gain + config.W_DIVERSITY_GLOBAL * diversity_gain
+        meta_controller.rewards.append(meta_reward)
+        print(f"\n--- 高层奖励计算 ---")
+        print(f"  效率提升: {efficiency_gain:.2f}, 多样性提升: {diversity_gain:.4f}")
+        print(f"  本轮高层总奖励: {meta_reward:.4f}")
 
-            # 将训练好的专家模型存入知识库
-            knowledge_base.update(farm_id, expert_model.state_dict())
-            print(f"    - {farm_id} 的专家模型已更新至知识库。")
+        # 3. 更新高层RL Agent
+        meta_controller.update()
 
-            # 更新性能记录
-            last_farm_performance[farm_id] = {
-                "accuracy": current_acc,
-                "latency": current_latency
-            }
+        # 更新状态
+        last_global_efficiency = current_efficiency
+        last_global_diversity = current_diversity
 
-            knowledge_base.update(farm_id, expert_model.state_dict())
-            knowledge_updated = True
-
-        # 如果知识库被更新（有新农场贡献了模型），则扩展动作空间
-        if knowledge_updated:
-            routing_agent.update_action_space()
-
-        routing_agent.print_q_table()
-
-    print("\n--- 联邦知识路由与赋能流程完成 ---")
-    print("知识库中包含了每个农场训练出的最新专家模型。")
-    print(f"模型保存在: {os.path.join(config.OUTPUT_DIR, 'knowledge_base')}")
-    print("每个农场的轻量级蒸馏模型已分别保存在输出目录中。")
+    print("\n--- HRL 框架所有轮次执行完毕 ---")
 
 
 if __name__ == '__main__':

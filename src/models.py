@@ -132,58 +132,33 @@ def build_model(num_classes: int, pretrained_path: str = None, use_pretrained_we
 
 def build_student_model(num_classes: int, architecture: str = 'mobilenet_v2'):
     """
-    构建一个轻量级的学生模型，并为其包装好量化存根。
+    构建一个轻量级的、为量化准备好的学生模型。
+    我们直接使用 torchvision.models.quantization 中的模型，
+    它们内部已经包含了 QuantStub 和 DeQuantStub。
     """
     arch_lower = architecture.lower()
-    print(f"正在构建学生模型 ({arch_lower})，支持 {num_classes} 个类别...")
+    print(f"\n正在构建可量化的学生模型 ({arch_lower})，支持 {num_classes} 个类别...")
 
     model_builder = None
     if arch_lower == 'mobilenet_v2':
+        # 使用 torchvision.models.quantization 中的 mobilenet_v2
         model_builder = quant_models.mobilenet_v2
     elif arch_lower == 'shufflenet_v2_x0_5':
+        # 使用 torchvision.models.quantization 中的 shufflenet_v2_x0_5
         model_builder = quant_models.shufflenet_v2_x0_5
     else:
-        raise NotImplementedError(f"学生模型架构 '{architecture}' 暂不支持。")
+        raise NotImplementedError(f"可量化的学生模型架构 '{architecture}' 暂不支持。")
 
-    # 构建原始模型
-    original_model = model_builder(pretrained=True)
+    # 构建预训练的FP32模型，这个模型已经准备好被量化
+    student_model = model_builder(pretrained=True, quantize=False)  # quantize=False表示先加载FP32权重
 
-    # 替换分类头
+    # 替换分类头以匹配我们的任务
     if 'mobilenet' in arch_lower:
-        num_ftrs = original_model.classifier[1].in_features
-        original_model.classifier[1] = nn.Linear(num_ftrs, num_classes)
+        num_ftrs = student_model.classifier[1].in_features
+        student_model.classifier[1] = nn.Linear(num_ftrs, num_classes)
     elif 'shufflenet' in arch_lower:
-        num_ftrs = original_model.fc.in_features
-        original_model.fc = nn.Linear(num_ftrs, num_classes)
+        num_ftrs = student_model.fc.in_features
+        student_model.fc = nn.Linear(num_ftrs, num_classes)
 
-    # vvvvvvvv 核心修正 vvvvvvvv
-    # 创建一个新的类来包装模型，而不是使用 nn.Sequential
-    # 这样可以保留原始模型的 forward 方法和所有属性
-    class QuantizableModel(nn.Module):
-        def __init__(self, model_fp32):
-            super(QuantizableModel, self).__init__()
-            self.quant = torch.quantization.QuantStub()
-            self.dequant = torch.quantization.DeQuantStub()
-            self.model_fp32 = model_fp32
-
-        def forward(self, x):
-            x = self.quant(x)
-            x = self.model_fp32(x)
-            x = self.dequant(x)
-            return x
-
-        def fuse_model(self):
-            # 遍历模型并融合
-            # 对于 torchvision.models.quantization.* 的模型，
-            # 它们通常有一个 .fuse_model() 方法
-            if hasattr(self.model_fp32, 'fuse_model'):
-                self.model_fp32.fuse_model()
-            else:
-                # 如果没有，我们可以用一个简单的通用方法
-                print("模型没有 .fuse_model() 方法，尝试通用融合...")
-                torch.quantization.fuse_modules(self.model_fp32, [['conv1', 'bn1', 'relu']], inplace=True)
-                # 这里可以根据需要添加更多融合模式
-    
-    # 用新类包装模型
-    quantizable_wrapper = QuantizableModel(original_model)
-    return quantizable_wrapper
+    print("可量化的学生模型构建完成。")
+    return student_model

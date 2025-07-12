@@ -197,3 +197,69 @@ def distill_unit_update(
             optimizer.step()
 
     return student_model.state_dict()
+
+
+def local_distill_update(
+        local_teacher_model: nn.Module,
+        student_model_to_train: nn.Module,
+        train_loader: torch.utils.data.DataLoader,
+        epochs: int,
+        lr: float,
+        temperature: float,
+        alpha: float,
+        device: torch.device,
+        # HRL 新增参数
+        transfer_teacher_model: nn.Module = None,
+        transfer_budget: float = 0.0
+):
+    """
+    客户端本地蒸馏过程 (FedMD)。
+    学生模型学习私有教师模型，并可选地学习一个外部迁移教师。
+    """
+    local_teacher_model.eval()
+    if transfer_teacher_model:
+        transfer_teacher_model.eval()
+
+    student_model_to_train.train()
+    optimizer = torch.optim.Adam(student_model_to_train.parameters(), lr=lr)
+
+    for epoch in range(epochs):
+        for inputs, hard_labels in train_loader:
+            inputs, hard_labels = inputs.to(device), hard_labels.to(device)
+            optimizer.zero_grad()
+
+            # 1. 从私有教师获取软标签
+            with torch.no_grad():
+                local_teacher_outputs = local_teacher_model(inputs)
+
+            # 2. 学生模型推理
+            student_outputs = student_model_to_train(inputs)
+
+            # 3. 计算标准蒸馏损失 (EXPLOIT部分)
+            loss_ce = nn.CrossEntropyLoss()(student_outputs, hard_labels)
+            loss_kd_local = nn.KLDivLoss(reduction='batchmean')(
+                F.log_softmax(student_outputs / temperature, dim=1),
+                F.softmax(local_teacher_outputs / temperature, dim=1)
+            ) * (temperature * temperature)
+
+            loss_exploit = alpha * loss_kd_local + (1 - alpha) * loss_ce
+
+            # 4. 计算知识迁移损失 (TRANSFER_IN部分)
+            loss_transfer = 0.0
+            if transfer_teacher_model and transfer_budget > 0:
+                with torch.no_grad():
+                    transfer_teacher_outputs = transfer_teacher_model(inputs)
+
+                loss_kd_transfer = nn.KLDivLoss(reduction='batchmean')(
+                    F.log_softmax(student_outputs / temperature, dim=1),
+                    F.softmax(transfer_teacher_outputs / temperature, dim=1)
+                ) * (temperature * temperature)
+                loss_transfer = loss_kd_transfer
+
+            # 5. 最终复合损失
+            total_loss = (1 - transfer_budget) * loss_exploit + transfer_budget * loss_transfer
+
+            total_loss.backward()
+            optimizer.step()
+
+    return student_model_to_train.state_dict()
