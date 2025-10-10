@@ -36,7 +36,7 @@ DISTILL_MODEL_ARCH = 'mobilenet_v2'
 FREEZE_LEVEL = 0.5  # 冻结60%的底层特征提取器
 
 # --- 6. 蒸馏参数 ---
-DISTILLATION_EPOCHS = 10
+DISTILLATION_EPOCHS = 20
 TEMPERATURE = 3.0           # 蒸馏温度
 ALPHA_DISTILLATION = 0.7    # 蒸馏损失中，软目标损失的权重
 DISTILL_ROUNDS = 3

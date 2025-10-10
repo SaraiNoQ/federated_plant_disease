@@ -35,11 +35,8 @@ def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id, 
     if mu > 0 and global_model_state is not None:
         global_params = [param.detach().clone() for param in torch.nn.utils.parameters_to_vector(
             [p for p in nn.Module().load_state_dict(global_model_state, strict=False) or model.parameters() if
-             p.requires_grad]  # Re-create a temporary model to load state dict to get parameters
+             p.requires_grad]
         )]
-        # This is a bit tricky; a simpler way is to pass the global model object itself
-        # For now, let's pass the state_dict and re-create parameters
-        # A much cleaner way:
         temp_global_model = copy.deepcopy(model).to(device)
         temp_global_model.load_state_dict(global_model_state)
         global_params = [param.detach().clone() for param in temp_global_model.parameters()]
@@ -53,7 +50,6 @@ def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id, 
             # --- FedProx Implementation ---
             loss = criterion(output, target)
 
-            # Add the proximal term if mu > 0
             if mu > 0 and global_params is not None:
                 prox_term = 0.0
                 local_params = model.parameters()
@@ -68,7 +64,6 @@ def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id, 
     return model.state_dict()
 
 
-# --- A more robust farm_unit_update using a simpler FedProx implementation ---
 def farm_unit_update_fedprox(model, global_model, train_loader, epochs, lr, device, farm_id, unit_id, mu=0.0):
     """
     A cleaner implementation of the local training process with FedProx.
@@ -92,9 +87,7 @@ def farm_unit_update_fedprox(model, global_model, train_loader, epochs, lr, devi
 
             if mu > 0:
                 prox_term = 0.0
-                # Iterate over the parameters of the local and global models
                 for local_param, global_param in zip(model.parameters(), global_model.parameters()):
-                    # The .norm(2) computes the L2 norm (Euclidean distance)
                     prox_term += (local_param - global_param.detach()).norm(2)
                 loss += (mu / 2) * prox_term
 
@@ -202,6 +195,8 @@ def distill_unit_update(
 def local_distill_update(
         local_teacher_model: nn.Module,
         student_model_to_train: nn.Module,
+        global_student_model: nn.Module, # 传入上一轮的全局学生模型
+        prox_mu: float,                  # FedProx的mu，我们复用它来控制相似度
         train_loader: torch.utils.data.DataLoader,
         epochs: int,
         lr: float,
@@ -235,7 +230,7 @@ def local_distill_update(
             # 2. 学生模型推理
             student_outputs = student_model_to_train(inputs)
 
-            # 3. 计算标准蒸馏损失 (EXPLOIT部分)
+            # 3. 计算标准蒸馏损失
             loss_ce = nn.CrossEntropyLoss()(student_outputs, hard_labels)
             loss_kd_local = nn.KLDivLoss(reduction='batchmean')(
                 F.log_softmax(student_outputs / temperature, dim=1),
@@ -244,7 +239,7 @@ def local_distill_update(
 
             loss_exploit = alpha * loss_kd_local + (1 - alpha) * loss_ce
 
-            # 4. 计算知识迁移损失 (TRANSFER_IN部分)
+            # 4. 计算知识迁移损失
             loss_transfer = 0.0
             if transfer_teacher_model and transfer_budget > 0:
                 with torch.no_grad():
@@ -258,6 +253,13 @@ def local_distill_update(
 
             # 5. 最终复合损失
             total_loss = (1 - transfer_budget) * loss_exploit + transfer_budget * loss_transfer
+
+            if prox_mu > 0:
+                prox_term = 0.0
+                for local_p, global_p in zip(student_model_to_train.parameters(), global_student_model.parameters()):
+                    prox_term += (local_p - global_p.detach()).norm(2)
+
+                total_loss += (prox_mu / 2) * prox_term
 
             total_loss.backward()
             optimizer.step()

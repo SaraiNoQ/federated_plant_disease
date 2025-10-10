@@ -191,6 +191,8 @@ def main():
                     updated_student_dict = local_distill_update(
                         local_teacher_model=private_teacher,
                         student_model_to_train=copy.deepcopy(farm_student_model),
+                        global_student_model=farm_student_model,  # 将本轮开始时的学生模型传入
+                        prox_mu=config.FEDPROX_MU,  # 使用config中的mu值
                         train_loader=farm_data["unit_loaders"][client_idx],
                         epochs=config.EPOCHS_PER_UNIT,
                         lr=config.LEARNING_RATE_DISTILL,

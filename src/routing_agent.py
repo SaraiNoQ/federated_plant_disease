@@ -5,7 +5,7 @@ import random
 class RoutingAgent:
     """
     服务器端的慢尺度RL Agent，负责知识路由。
-    现在支持动态添加新农场。
+    支持动态添加新农场。
     """
 
     def __init__(self, initial_farm_ids: list, learning_rate=0.1, discount_factor=0.9, exploration_rate=1.0,

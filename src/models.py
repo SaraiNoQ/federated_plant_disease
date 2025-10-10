@@ -39,7 +39,6 @@ def get_classifier_in_features(model, model_name):
         return model.classifier[3].in_features
     raise ValueError(f"未知的模型架构 '{model_name}'，无法获取分类头特征数。")
 
-# vvvvvv 用这个新版本替换你旧的 build_model 函数 vvvvvv
 def build_model(num_classes: int, pretrained_path: str = None, use_pretrained_weights=True):
     """
     构建并返回一个指定架构的模型。
@@ -56,7 +55,7 @@ def build_model(num_classes: int, pretrained_path: str = None, use_pretrained_we
     model_name = config.MODEL_ARCHITECTURE.lower()
     print(f"\n正在初始化模型: {model_name}，目标类别数: {num_classes}")
 
-    # --- 1. 创建模型骨架 (始终先用 pretrained=False) ---
+    # --- 1. 创建模型骨架 ---
     if model_name == 'resnet18':
         model = models.resnet18(pretrained=False)
         model_urls = {'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth'}
