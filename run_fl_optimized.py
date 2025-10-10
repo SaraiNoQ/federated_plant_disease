@@ -83,13 +83,18 @@ def main():
     # 知识库，用于存储每个农场的专家模型
     knowledge_base = KnowledgeBase(config.OUTPUT_DIR)
 
+    # 农场ID到索引的映射
+    farm_ids_list = sorted(list(config.FARM_CLASS_ALLOCATION.keys()))
+    farm_to_idx = {fid: i for i, fid in enumerate(farm_ids_list)}
+
     # --- HRL 初始化 ---
-    # 高层RL Agent
-    state_dim = 4
+    # 高层RL Agent(4全局 + 4农场特定)
+    state_dim = 8
     meta_controller = MetaControllerA2C(
         num_farms=config.NUM_FARMS,
         state_dim=state_dim,
-        device=config.DEVICE
+        device=config.DEVICE,
+        entropy_coeff=0.01 # <--- 引入熵正则化
     )
 
     # 为每个农场创建低层RL Agent和本地教师模型
@@ -119,37 +124,61 @@ def main():
 
         # --- 高层决策阶段 ---
         # 1. 构建高层状态
-        all_metrics = [m['metrics'] for m in knowledge_base.get_all_models()]
-        if all_metrics:
+        # 1. 构建全局上下文
+        all_model_info = knowledge_base.get_all_models()
+        if all_model_info:
+            all_metrics = [info['metrics'] for info in all_model_info]
             avg_acc = np.mean([m['accuracy'] for m in all_metrics])
             avg_f1 = np.mean([m['f1_score'] for m in all_metrics])
             avg_loss = np.mean([m['loss'] for m in all_metrics])
-            # 简化多样性：模型参数的方差
-            all_params = [torch.nn.utils.parameters_to_vector(m['state_dict'].values()) for m in
-                          knowledge_base.get_all_models()]
+            all_params = [torch.nn.utils.parameters_to_vector(info['state_dict'].values()) for info in all_model_info]
             diversity = torch.stack(all_params).var().item() if len(all_params) > 1 else 0.0
         else:
             avg_acc, avg_f1, avg_loss, diversity = 0, 0, 0, 0
-
-        current_state = [avg_acc / 100, avg_f1, avg_loss, diversity]
+        global_context = [avg_acc/100.0, avg_f1, avg_loss, diversity]
 
         # 2. 为每个活跃农场生成指令
         farm_directives = {}
         print("--- 高层Agent正在发布指令 ---")
+
+        # 获取当前可用的教师
+        available_teachers_ids = knowledge_base.get_all_farm_ids()
+        available_teachers_indices = [farm_to_idx[fid] for fid in available_teachers_ids]
+        
         for farm_id in active_farm_ids:
-            action = meta_controller.select_action(current_state)
-            if action == 0 or len(knowledge_base) == 0:
+            # --- 构建该农场的个性化状态 ---
+            farm_idx = farm_to_idx[farm_id]
+            farm_info = knowledge_base.get_model(farm_id) # 假设KB能处理新农场
+            farm_specific_features = [0.0, 0.0, 1.0, 1.0] # 默认新农场状态
+            if farm_info:
+                metrics = farm_info['metrics']
+                farm_specific_features = [metrics['accuracy']/100, metrics['f1_score'], metrics['loss'], 0.0] # 0.0是简化的stagnation
+            else: # 新农场
+                farm_specific_features = [0.0, 0.0, 1.0, 1.0] # 用默认值表示性能差、停滞
+            
+            # 拼接成最终状态
+            current_state = global_context + farm_specific_features
+
+            # --- 获取决策 ---
+            action, log_prob = meta_controller.select_action(
+                current_state, 
+                farm_idx, 
+                available_teachers_indices
+            )
+            # --- 存储决策信息 ---
+            meta_controller.store_transition(current_state, log_prob)
+
+            # --- 解析动作为指令 ---
+            if action == 0 or not available_teachers_ids:
                 directive = {'role': 'EXPLOIT'}
-                print(f"  - 指令 to {farm_id}: {directive}")
             else:
-                # 选择一个非自身的教师
-                teacher_options = [fid for fid in knowledge_base.get_all_farm_ids() if fid != farm_id]
-                if not teacher_options:
+                valid_teacher_ids = [fid for fid in available_teachers_ids if fid != farm_id]
+                if not valid_teacher_ids:
                     directive = {'role': 'EXPLOIT'}
                 else:
-                    teacher_id = teacher_options[(action - 1) % len(teacher_options)]
+                    teacher_id = valid_teacher_ids[(action - 1) % len(valid_teacher_ids)]
                     directive = {'role': 'TRANSFER_IN', 'source': teacher_id, 'budget': config.TRANSFER_BUDGET}
-                print(f"  - 指令 to {farm_id}: {directive}")
+            print(f"  - 指令 to {farm_id}: {directive}")
             farm_directives[farm_id] = directive
 
         # --- 低层执行阶段 ---
@@ -271,7 +300,7 @@ def main():
         for farm_id, model_info in newly_trained_student_models.items():
             knowledge_base.update(farm_id, model_info)
 
-        # 2. 计算高层奖励
+        # 2. 计算全局奖励分量
         current_metrics = [m['metrics'] for m in knowledge_base.get_all_models()]
         current_avg_acc = np.mean([m['accuracy'] for m in current_metrics]) if current_metrics else 0
         current_avg_lat = np.mean(round_latencies) if round_latencies else 0
@@ -281,20 +310,39 @@ def main():
         efficiency_gain = current_efficiency - last_global_efficiency
 
         # 计算多样性
-        all_params = [torch.nn.utils.parameters_to_vector(m['state_dict'].values()) for m in
-                      knowledge_base.get_all_models()]
-        current_diversity = torch.stack(all_params).var().item() if len(all_params) > 1 else 0.0
+        all_state_dicts = [m['state_dict'] for m in knowledge_base.get_all_models()]
+        if len(all_state_dicts) > 1:
+            all_params = [torch.nn.utils.parameters_to_vector(sd.values()) for sd in all_state_dicts]
+            current_diversity = torch.stack(all_params).var().item()
+        else:
+            current_diversity = 0.0
         diversity_gain = current_diversity - last_global_diversity
+        
+        global_reward_component = config.W_EFFICIENCY_GLOBAL * efficiency_gain + config.W_DIVERSITY_GLOBAL * diversity_gain
+        # 3. 计算并分配个性化奖励
+        individual_rewards = []
+        w_local_gain = 0.3 # 可在config中定义
+        for farm_id in active_farm_ids:
+            current_info = newly_trained_student_models.get(farm_id)
+            last_info = knowledge_base.get_model(farm_id)
+            local_acc_gain = 0.0
+            if current_info:
+                if last_info:
+                    local_acc_gain = current_info['metrics']['accuracy'] - last_info['metrics']['accuracy']
+                else: # 新农场
+                    local_acc_gain = current_info['metrics']['accuracy']
+            
+            # 组合奖励
+            reward = (1 - w_local_gain) * global_reward_component + w_local_gain * (local_acc_gain / 10.0)
+            individual_rewards.append(reward)
 
-        # 最终高层奖励
-        meta_reward = config.W_EFFICIENCY_GLOBAL * efficiency_gain + config.W_DIVERSITY_GLOBAL * diversity_gain
-        meta_controller.rewards.append(meta_reward)
-        print(f"\n--- 高层奖励计算 ---")
-        print(f"  效率提升: {efficiency_gain:.2f}, 多样性提升: {diversity_gain:.4f}")
-        print(f"  本轮高层总奖励: {meta_reward:.4f}")
+        print(f"\n--- 高层奖励计算 (个性化) ---")
+        print(f"  全局奖励分量: {global_reward_component:.4f}")
+        print(f"  本轮个体奖励 (前5个): {np.round(individual_rewards[:5], 4)}")
 
-        # 3. 更新高层RL Agent
-        meta_controller.update()
+        # 3. 批量更新高层Agent，将本轮的全局奖励作为参数传入
+        print("  正在批量更新高层Agent策略...")
+        meta_controller.update(individual_rewards)
 
         # 更新状态
         last_global_efficiency = current_efficiency

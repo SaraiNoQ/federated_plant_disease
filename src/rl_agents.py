@@ -77,81 +77,94 @@ class Critic(nn.Module):
         state_value = self.critic(x)
         return state_value
 
-
 class MetaControllerA2C:
     """
     高层RL Agent (A2C)，负责为每个农场发布策略指令。
-    这是一个简化的实现，用于演示。
+    支持个性化状态和动作掩码。
     """
-
-    def __init__(self, num_farms, state_dim, lr_actor=0.001, lr_critic=0.001, gamma=0.99, device='cpu'):
+    def __init__(self, num_farms, state_dim, lr_actor=0.001, lr_critic=0.001, gamma=0.99, entropy_coeff=0.01, device='cpu'):
         self.num_farms = num_farms
-        # 动作空间：0=EXPLOIT, 1-N = TRANSFER_IN from farm 1-N
-        self.action_dim = num_farms + 1
+        # 动作空间：0=EXPLOIT, 1..N = TRANSFER_IN from farm 0..N-1
+        self.action_dim = num_farms + 1 
         self.gamma = gamma
+        self.entropy_coeff = entropy_coeff
         self.device = device
-
+        
         self.actor = Actor(state_dim, self.action_dim).to(device)
         self.critic = Critic(state_dim).to(device)
         self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=lr_actor)
         self.optimizer_critic = torch.optim.Adam(self.critic.parameters(), lr=lr_critic)
+        
+        self.mse_loss = nn.MSELoss()
 
-        self.log_probs = []
-        self.state_values = []
-        self.rewards = []
+        # 使用一个缓冲区来存储一个完整轮次的数据
+        self.buffer = []
 
-    def select_action(self, state):
-        """为单个农场选择一个指令。"""
-        state = torch.FloatTensor(state).to(self.device)
-        action_probs = self.actor(state)
-        dist = Categorical(action_probs)
+    def select_action(self, state, farm_idx_to_decide, available_teachers_indices):
+        """
+        为单个农场选择一个指令，并应用动作掩码。
+        """
+        state = torch.tensor(state, dtype=torch.float32).to(self.device)
+        
+        with torch.no_grad():
+            action_probs = self.actor(state)
+
+        # --- 动作掩码 ---
+        mask = torch.ones_like(action_probs)
+        # 1. 不能向自己学习
+        mask[farm_idx_to_decide + 1] = 0
+        # 2. 不能向没有模型的老师学习
+        all_teacher_indices = set(range(self.num_farms))
+        unavailable_teachers = all_teacher_indices - set(available_teachers_indices)
+        for unavailable_idx in unavailable_teachers:
+            mask[unavailable_idx + 1] = 0
+        
+        # 应用掩码
+        masked_action_probs = action_probs * mask
+        # 重新归一化概率
+        if torch.sum(masked_action_probs) > 0:
+            masked_action_probs /= torch.sum(masked_action_probs)
+        else:
+            # 如果所有TRANSFER动作都被屏蔽，则只能EXPLOIT
+            masked_action_probs = torch.zeros_like(action_probs)
+            masked_action_probs[0] = 1.0
+
+        dist = Categorical(masked_action_probs)
         action = dist.sample()
+        
+        return action.item(), dist.log_prob(action)
 
-        self.log_probs.append(dist.log_prob(action))
-        self.state_values.append(self.critic(state))
+    def store_transition(self, state, action_log_prob):
+        """将一次决策的数据存入缓冲区。"""
+        self.buffer.append((state, action_log_prob))
 
-        return action.item()
-
-    def update(self):
-        """在一轮结束后，用收集到的数据更新网络。"""
-        if not self.rewards:
+    def update(self, rewards: list):
+        if not self.buffer:
             return
-
-        # 计算累积折扣奖励
-        returns = []
-        discounted_reward = 0
-        for reward in reversed(self.rewards):
-            discounted_reward = reward + self.gamma * discounted_reward
-            returns.insert(0, discounted_reward)
-
-        returns = torch.tensor(returns, dtype=torch.float32).to(self.device)
-        # 对returns进行标准化 (这一步是可选的，但通常能稳定训练)
+        
+        # 个性化奖励已经传入，直接使用
+        returns = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         if len(returns) > 1:
             returns = (returns - returns.mean()) / (returns.std() + 1e-5)
 
-        # 把 log_probs 和 state_values 列表也转换成张量
-        log_probs = torch.stack(self.log_probs).to(self.device)
-        state_values = torch.cat(self.state_values).to(self.device)  # 使用cat代替stack，如果state_values已经是(1,)的张量
+        states = torch.tensor([item[0] for item in self.buffer], dtype=torch.float32).to(self.device)
+        old_log_probs = torch.stack([item[1] for item in self.buffer]).to(self.device)
 
-        # 确保 state_values 是正确的形状
-        # state_values 应该是 (N,) or (N, 1), returns 应该是 (N,)
-        if state_values.dim() > 1:
-            state_values = state_values.squeeze()
-
-        # 计算优势
+        state_values = self.critic(states).squeeze()
         advantage = returns - state_values.detach()
+        
+        # 计算熵
+        dist_entropy = Categorical(self.actor(states)).entropy().mean()
 
-        # 计算损失
-        actor_loss = -(log_probs * advantage).mean()
-        critic_loss = nn.MSELoss()(state_values, returns)
+        actor_loss = -(old_log_probs * advantage).mean()
+        critic_loss = self.mse_loss(state_values, returns)
 
-        # 更新网络
+        loss = actor_loss + 0.5 * critic_loss - self.entropy_coeff * dist_entropy
+
         self.optimizer_actor.zero_grad()
         self.optimizer_critic.zero_grad()
-        actor_loss.backward()
-        critic_loss.backward()
+        loss.backward()
         self.optimizer_actor.step()
         self.optimizer_critic.step()
-
-        # 清空缓冲区
-        self.log_probs, self.state_values, self.rewards = [], [], []
+        
+        self.buffer = []
