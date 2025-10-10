@@ -4,7 +4,7 @@ import torch
 from torchvision import models
 from torchvision.models import quantization as quant_models
 import torch.nn as nn
-import config # 导入config来获取模型选择
+import config_optimized as config # 导入config来获取模型选择
 from torch.hub import load_state_dict_from_url
 
 def _modify_classifier(model, model_name, num_classes):

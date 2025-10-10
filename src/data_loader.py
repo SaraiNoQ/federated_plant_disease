@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, random_split, Subset, Dataset
 from torchvision import datasets, transforms
 import numpy as np
 import os
-import config  # 导入config
+import config_optimized as config  # 导入config
 
 # --- 1. 数据预处理转换 ---
 train_transform = transforms.Compose([

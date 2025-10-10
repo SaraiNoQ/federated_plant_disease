@@ -7,6 +7,7 @@ from collections import OrderedDict
 import copy
 import numpy as np
 import torch.nn.functional as F
+import config_optimized as config
 
 
 def farm_unit_update(model, train_loader, epochs, lr, device, farm_id, unit_id, global_model_state=None, mu=0.0):
@@ -192,6 +193,13 @@ def distill_unit_update(
     return student_model.state_dict()
 
 
+def print_memory_usage(prefix=""):
+    """打印GPU显存使用情况"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / 1024**3
+        cached = torch.cuda.memory_reserved() / 1024**3
+        print(f"{prefix} GPU显存使用: {allocated:.2f}GB / {cached:.2f}GB")
+
 def local_distill_update(
         local_teacher_model: nn.Module,
         student_model_to_train: nn.Module,
@@ -210,7 +218,11 @@ def local_distill_update(
     """
     客户端本地蒸馏过程 (FedMD)。
     学生模型学习私有教师模型，并可选地学习一个外部迁移教师。
+    添加了显存管理优化。
     """
+    # 初始化显存管理
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
     local_teacher_model.eval()
     if transfer_teacher_model:
         transfer_teacher_model.eval()
@@ -219,9 +231,9 @@ def local_distill_update(
     optimizer = torch.optim.Adam(student_model_to_train.parameters(), lr=lr)
 
     for epoch in range(epochs):
-        for inputs, hard_labels in train_loader:
+        for batch_idx, (inputs, hard_labels) in enumerate(train_loader):
             inputs, hard_labels = inputs.to(device), hard_labels.to(device)
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)  # 使用set_to_none减少显存占用
 
             # 1. 从私有教师获取软标签
             with torch.no_grad():
@@ -239,6 +251,9 @@ def local_distill_update(
 
             loss_exploit = alpha * loss_kd_local + (1 - alpha) * loss_ce
 
+            # 释放中间变量
+            del local_teacher_outputs
+
             # 4. 计算知识迁移损失
             loss_transfer = 0.0
             if transfer_teacher_model and transfer_budget > 0:
@@ -250,6 +265,9 @@ def local_distill_update(
                     F.softmax(transfer_teacher_outputs / temperature, dim=1)
                 ) * (temperature * temperature)
                 loss_transfer = loss_kd_transfer
+
+                # 释放中间变量
+                del transfer_teacher_outputs
 
             # 5. 最终复合损失
             total_loss = (1 - transfer_budget) * loss_exploit + transfer_budget * loss_transfer
@@ -263,5 +281,15 @@ def local_distill_update(
 
             total_loss.backward()
             optimizer.step()
+
+            # 清理梯度
+            optimizer.zero_grad(set_to_none=True)
+
+            # 定期清理显存和监控
+            if batch_idx % config.CLEAN_CACHE_INTERVAL == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            if batch_idx % config.MEMORY_MONITOR_INTERVAL == 0 and torch.cuda.is_available():
+                print_memory_usage(f"蒸馏轮次 {epoch+1}/{epochs} 批次 {batch_idx}")
 
     return student_model_to_train.state_dict()
