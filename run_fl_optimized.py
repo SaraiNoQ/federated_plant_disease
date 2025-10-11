@@ -251,6 +251,7 @@ def main():
                 updated_teacher_dict = local_teacher_update(
                     teacher_model=teacher_model,
                     train_loader=farm_data["unit_loaders"][client_idx],
+                    val_loader=farm_data["val_loader"],  # 添加验证数据加载器
                     epochs=config.EPOCHS_PER_UNIT,  # 使用与蒸馏相同的轮数
                     lr=config.LEARNING_RATE_DISTILL,
                     device=config.DEVICE,
@@ -263,6 +264,22 @@ def main():
             
             print(f"  --- 阶段一完成：所有教师模型已微调 (农场 {farm_id}) ---")
 
+            # --- 教师模型聚合 ---
+            print(f"  --- 教师模型聚合 (农场 {farm_id}) ---")
+            # 收集所有微调后的教师模型状态
+            teacher_updates = []
+            for client_idx in range(config.CLIENT_UNITS_PER_FARM):
+                teacher_model = local_teachers[farm_id][client_idx]
+                teacher_updates.append(teacher_model.state_dict())
+            
+            # 聚合教师模型
+            if teacher_updates:
+                aggregated_teacher_weights = aggregate_models(teacher_updates, f"Farm {farm_id} Teacher Models")
+                # 将聚合后的权重应用到所有教师模型
+                for client_idx in range(config.CLIENT_UNITS_PER_FARM):
+                    local_teachers[farm_id][client_idx].load_state_dict(aggregated_teacher_weights)
+                print(f"    教师模型聚合完成，已应用到所有客户端")
+            
             # 如果是TRANSFER_IN，加载教师学生模型
             transfer_teacher_student_model = None
             if directive['role'] == 'TRANSFER_IN':

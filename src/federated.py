@@ -203,6 +203,7 @@ def print_memory_usage(prefix=""):
 def local_teacher_update(
         teacher_model: nn.Module,
         train_loader: torch.utils.data.DataLoader,
+        val_loader: torch.utils.data.DataLoader,
         epochs: int,
         lr: float,
         device: torch.device,
@@ -215,6 +216,7 @@ def local_teacher_update(
     Args:
         teacher_model (nn.Module): 要训练的教师模型
         train_loader (DataLoader): 本地训练数据加载器
+        val_loader (DataLoader): 验证数据加载器，用于评估真实性能
         epochs (int): 训练轮数
         lr (float): 学习率
         device (torch.device): 训练设备
@@ -231,12 +233,10 @@ def local_teacher_update(
         lr=lr
     )
     criterion = nn.CrossEntropyLoss()
-    
     for epoch in range(epochs):
         epoch_loss = 0.0
-        correct = 0
-        total = 0
         
+        # 训练阶段
         for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
@@ -248,15 +248,30 @@ def local_teacher_update(
             optimizer.step()
             
             epoch_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
         
-        accuracy = 100. * correct / total
         avg_loss = epoch_loss / (batch_idx + 1)
         
-        if epoch % 2 == 0 or epoch == epochs - 1:  # 每2轮或最后一轮打印
-            print(f"      教师微调轮次 {epoch+1}/{epochs} | 损失: {avg_loss:.4f} | 准确率: {accuracy:.2f}%")
+        # 每2轮或最后一轮评估验证集性能
+        if epoch % 2 == 0 or epoch == epochs - 1:
+            # 切换到评估模式
+            teacher_model.eval()
+            val_correct = 0
+            val_total = 0
+            
+            with torch.no_grad():
+                for val_inputs, val_targets in val_loader:
+                    val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                    val_outputs = teacher_model(val_inputs)
+                    _, val_predicted = val_outputs.max(1)
+                    val_total += val_targets.size(0)
+                    val_correct += val_predicted.eq(val_targets).sum().item()
+            
+            val_accuracy = 100. * val_correct / val_total
+            
+            print(f"      教师微调轮次 {epoch+1}/{epochs} | 训练损失: {avg_loss:.4f} | 验证准确率: {val_accuracy:.2f}%")
+            
+            # 切换回训练模式
+            teacher_model.train()
     
     return teacher_model.state_dict()
 
