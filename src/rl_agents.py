@@ -100,9 +100,10 @@ class MetaControllerA2C:
         # 使用一个缓冲区来存储一个完整轮次的数据
         self.buffer = []
 
-    def select_action(self, state, farm_idx_to_decide, available_teachers_indices):
+    def select_action(self, state, farm_idx_to_decide, available_teachers_indices, exploration_rate=0.1):
         """
         为单个农场选择一个指令，并应用动作掩码。
+        增加探索机制和农场互补性考虑。
         """
         state = torch.tensor(state, dtype=torch.float32).to(self.device)
         
@@ -121,6 +122,21 @@ class MetaControllerA2C:
         
         # 应用掩码
         masked_action_probs = action_probs * mask
+        
+        # 增加探索机制：以一定概率随机选择可用动作
+        if np.random.random() < exploration_rate and torch.sum(masked_action_probs) > 0:
+            # 随机选择可用的动作
+            available_actions = torch.where(mask > 0)[0]
+            if len(available_actions) > 0:
+                random_action = np.random.choice(available_actions.cpu().numpy())
+                # 创建均匀分布来模拟随机选择
+                uniform_probs = torch.ones_like(masked_action_probs) * mask
+                if torch.sum(uniform_probs) > 0:
+                    uniform_probs /= torch.sum(uniform_probs)
+                dist = Categorical(uniform_probs)
+                action = torch.tensor(random_action, dtype=torch.long).to(self.device)
+                return action.item(), dist.log_prob(action)
+        
         # 重新归一化概率
         if torch.sum(masked_action_probs) > 0:
             masked_action_probs /= torch.sum(masked_action_probs)

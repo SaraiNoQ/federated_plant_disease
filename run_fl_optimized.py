@@ -88,8 +88,8 @@ def main():
     farm_to_idx = {fid: i for i, fid in enumerate(farm_ids_list)}
 
     # --- HRL 初始化 ---
-    # 高层RL Agent(4全局 + 4农场特定)
-    state_dim = 8
+    # 高层RL Agent(4全局 + 6农场特定) - 更新状态维度
+    state_dim = 10
     meta_controller = MetaControllerA2C(
         num_farms=config.NUM_FARMS,
         state_dim=state_dim,
@@ -145,25 +145,49 @@ def main():
         available_teachers_ids = knowledge_base.get_all_farm_ids()
         available_teachers_indices = [farm_to_idx[fid] for fid in available_teachers_ids]
         
+        # 计算动态探索率：随着轮次增加而减少
+        exploration_rate = max(0.05, 0.3 * (1 - server_round_idx / config.SERVER_ROUNDS))
+        
+        print(f"  可用教师: {available_teachers_ids}")
+        print(f"  探索率: {exploration_rate:.3f}")
+        
         for farm_id in active_farm_ids:
             # --- 构建该农场的个性化状态 ---
             farm_idx = farm_to_idx[farm_id]
-            farm_info = knowledge_base.get_model(farm_id) # 假设KB能处理新农场
-            farm_specific_features = [0.0, 0.0, 1.0, 1.0] # 默认新农场状态
+            farm_info = knowledge_base.get_model(farm_id)
+            
+            # 改进的状态构建：包含更多农场特定信息
             if farm_info:
                 metrics = farm_info['metrics']
-                farm_specific_features = [metrics['accuracy']/100, metrics['f1_score'], metrics['loss'], 0.0] # 0.0是简化的stagnation
+                # 添加农场类别多样性、历史性能趋势等特征
+                farm_classes = config.FARM_CLASS_ALLOCATION[farm_id]
+                class_diversity = len(farm_classes) / 10.0  # 归一化
+                # 计算性能趋势（简化版）
+                performance_trend = 1.0 if metrics['accuracy'] > 50 else 0.0
+                farm_specific_features = [
+                    metrics['accuracy']/100, 
+                    metrics['f1_score'], 
+                    metrics['loss'], 
+                    class_diversity,
+                    performance_trend,
+                    farm_idx / config.NUM_FARMS  # 农场索引归一化
+                ]
             else: # 新农场
-                farm_specific_features = [0.0, 0.0, 1.0, 1.0] # 用默认值表示性能差、停滞
+                farm_classes = config.FARM_CLASS_ALLOCATION[farm_id]
+                class_diversity = len(farm_classes) / 10.0
+                farm_specific_features = [
+                    0.0, 0.0, 1.0, class_diversity, 0.0, farm_idx / config.NUM_FARMS
+                ]
             
-            # 拼接成最终状态
+            # 拼接成最终状态（现在状态维度为10）
             current_state = global_context + farm_specific_features
 
             # --- 获取决策 ---
             action, log_prob = meta_controller.select_action(
                 current_state, 
                 farm_idx, 
-                available_teachers_indices
+                available_teachers_indices,
+                exploration_rate=exploration_rate
             )
             # --- 存储决策信息 ---
             meta_controller.store_transition(current_state, log_prob)
@@ -178,7 +202,7 @@ def main():
                 else:
                     teacher_id = valid_teacher_ids[(action - 1) % len(valid_teacher_ids)]
                     directive = {'role': 'TRANSFER_IN', 'source': teacher_id, 'budget': config.TRANSFER_BUDGET}
-            print(f"  - 指令 to {farm_id}: {directive}")
+            print(f"  - 指令 to {farm_id}: {directive} (动作: {action})")
             farm_directives[farm_id] = directive
 
         # --- 低层执行阶段 ---
@@ -321,24 +345,41 @@ def main():
         global_reward_component = config.W_EFFICIENCY_GLOBAL * efficiency_gain + config.W_DIVERSITY_GLOBAL * diversity_gain
         # 3. 计算并分配个性化奖励
         individual_rewards = []
-        w_local_gain = 0.3 # 可在config中定义
+        w_local_gain = 0.4  # 增加本地增益权重
+        w_transfer_success = 0.2  # 知识转移成功奖励
+        
         for farm_id in active_farm_ids:
             current_info = newly_trained_student_models.get(farm_id)
             last_info = knowledge_base.get_model(farm_id)
             local_acc_gain = 0.0
+            transfer_success_bonus = 0.0
+            
             if current_info:
                 if last_info:
                     local_acc_gain = current_info['metrics']['accuracy'] - last_info['metrics']['accuracy']
                 else: # 新农场
                     local_acc_gain = current_info['metrics']['accuracy']
+                
+                # 检查知识转移是否成功
+                directive = farm_directives.get(farm_id, {})
+                if directive.get('role') == 'TRANSFER_IN':
+                    # 如果转移后性能提升，给予额外奖励
+                    if local_acc_gain > 0:
+                        transfer_success_bonus = 0.5
+                    else:
+                        transfer_success_bonus = -0.2  # 转移失败惩罚
             
-            # 组合奖励
-            reward = (1 - w_local_gain) * global_reward_component + w_local_gain * (local_acc_gain / 10.0)
+            # 组合奖励：全局效率 + 本地增益 + 转移成功奖励
+            reward = (1 - w_local_gain - w_transfer_success) * global_reward_component + \
+                    w_local_gain * (local_acc_gain / 10.0) + \
+                    w_transfer_success * transfer_success_bonus
+            
             individual_rewards.append(reward)
 
         print(f"\n--- 高层奖励计算 (个性化) ---")
         print(f"  全局奖励分量: {global_reward_component:.4f}")
         print(f"  本轮个体奖励 (前5个): {np.round(individual_rewards[:5], 4)}")
+        print(f"  探索率: {exploration_rate:.3f}")
 
         # 3. 批量更新高层Agent，将本轮的全局奖励作为参数传入
         print("  正在批量更新高层Agent策略...")
