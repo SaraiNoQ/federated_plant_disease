@@ -3,7 +3,7 @@
 import torch
 
 # --- 1. 路径设置 ---
-DATA_DIR = './data/color'  # PlantVillage数据集的根目录
+# DATA_DIR = './data/color'  # PlantVillage数据集的根目录
 OUTPUT_DIR = './outputs_optimized'
 
 # --- 2. 顶级联邦学习参数 (农场间) ---
@@ -11,13 +11,13 @@ NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
 SERVER_ROUNDS = 10         # 服务器聚合农场模型的全局轮数，从10降低到5
 
 # --- 3. 农场内联邦学习参数 (模拟设备/计算单元) ---
-CLIENT_UNITS_PER_FARM = 7 # 每个农场内部的计算单元数量 (客户端)，从5降低到3
-FARM_FL_ROUNDS = 8       # 每个农场内部联邦学习的通信轮数，从10降低到5
-UNITS_PER_FARM_ROUND = 5  # 每轮农场内FL选择的计算单元数量，从4降低到2
+CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)，从5降低到3
+FARM_FL_ROUNDS = 10       # 每个农场内部联邦学习的通信轮数，从10降低到5
+UNITS_PER_FARM_ROUND = 4  # 每轮农场内FL选择的计算单元数量，从4降低到2
 EPOCHS_PER_UNIT = 2       # 每个计算单元本地训练的epoch数，从3降低到2
 
 # --- 4. 模型与训练参数 ---
-NUM_CLASSES_PLANTVILLAGE = 38 # PlantVillage总类别数
+# NUM_CLASSES_PLANTVILLAGE = 38 # PlantVillage总类别数
 BATCH_SIZE = 128              # 批量大小，从128降低到32
 LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -34,25 +34,47 @@ DATA_PARTITION_STRATEGY = 'dirichlet'
 DIRICHLET_ALPHA = 0.5
 
 # 这个字典定义了每个农场拥有的作物类别 (基于PlantVillage的文件夹名)
-FARM_CLASS_ALLOCATION = {
-    'Farm_A': ['Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
-               'Blueberry___healthy', 'Cherry_(including_sour)___Powdery_mildew','Cherry_(including_sour)___healthy'],
-    'Farm_B': ['Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot', 'Corn_(maize)___Common_rust_', 
-                'Corn_(maize)___Northern_Leaf_Blight', 'Corn_(maize)___healthy'],
-    'Farm_C': ['Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)',
-               'Grape___healthy', 'Orange___Haunglongbing_(Citrus_greening)'],
-    'Farm_D': ['Peach___Bacterial_spot', 'Peach___healthy', 'Pepper,_bell___Bacterial_spot',
-               'Pepper,_bell___healthy', 'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'],
-    'Farm_E': ['Raspberry___healthy', 'Soybean___healthy', 'Squash___Powdery_mildew',
-                'Strawberry___Leaf_scorch', 'Strawberry___healthy'],
-    'Farm_F': ['Tomato___Bacterial_spot', 'Tomato___Early_blight',
-               'Tomato___Late_blight', 'Tomato___Leaf_Mold', 'Tomato___Septoria_leaf_spot',
-               'Tomato___Spider_mites Two-spotted_spider_mite', 'Tomato___Target_Spot',
-               'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus', 'Tomato___healthy']
-}
+USE_DATASET = 'plantdoc' # 'plantvillage' or 'plantdoc'
+
+if USE_DATASET == 'plantvillage':
+    DATA_DIR = './data/color'
+    NUM_CLASSES_TOTAL = 38
+    FARM_CLASS_ALLOCATION = { # PlantVillage的分配
+        'Farm_A': ['Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
+                   'Blueberry___healthy', 'Cherry_(including_sour)___Powdery_mildew','Cherry_(including_sour)___healthy'],
+        'Farm_B': ['Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot', 'Corn_(maize)___Common_rust_', 
+                    'Corn_(maize)___Northern_Leaf_Blight', 'Corn_(maize)___healthy'],
+        'Farm_C': ['Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)',
+                   'Grape___healthy', 'Orange___Haunglongbing_(Citrus_greening)'],
+        'Farm_D': ['Peach___Bacterial_spot', 'Peach___healthy', 'Pepper,_bell___Bacterial_spot',
+                   'Pepper,_bell___healthy', 'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy'],
+        'Farm_E': ['Raspberry___healthy', 'Soybean___healthy', 'Squash___Powdery_mildew',
+                    'Strawberry___Leaf_scorch', 'Strawberry___healthy'],
+        'Farm_F': ['Tomato___Bacterial_spot', 'Tomato___Early_blight',
+                   'Tomato___Late_blight', 'Tomato___Leaf_Mold', 'Tomato___Septoria_leaf_spot',
+                   'Tomato___Spider_mites Two-spotted_spider_mite', 'Tomato___Target_Spot',
+                   'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus', 'Tomato___healthy']
+    }
+elif USE_DATASET == 'plantdoc':
+    DATA_DIR = './data/plantdoc_merged' # <--- 指向你合并后的PlantDoc数据目录
+    NUM_CLASSES_TOTAL = 27 # PlantDoc有27个类别
+    # --- 为PlantDoc重新设计农场类别分配 ---
+    # 这需要你查看PlantDoc的类别名并进行合理分配
+    # 这里是一个示例分配，你需要根据实际文件夹名进行修改！
+    FARM_CLASS_ALLOCATION = {
+        'Farm_A': ['Apple rust leaf', 'Apple leaf', 'Apple Scab Leaf', 'Bell_pepper leaf spot', 'Bell_pepper leaf'],
+        'Farm_B': ['Blueberry leaf', 'Cherry leaf', 'Corn Gray leaf spot', 'Corn rust leaf', 'Corn leaf blight'],
+        'Farm_C': ['Peach leaf', 'Potato leaf early blight', 'Potato leaf late blight', 'Raspberry leaf', 'Soyabean leaf'],
+        'Farm_D': ['Grape leaf blight', 'Grape leaf', 'Grape Esca (Black Measles)', 'Squash Powdery mildew leaf', 'Strawberry leaf'],
+        'Farm_E': ['Tomato Early blight leaf', 'Tomato leaf', 'Tomato leaf bacterial spot', 'Tomato leaf mosaic virus'],
+        'Farm_F': ['Tomato Septoria leaf spot', 'Tomato leaf yellow virus', 'Tomato two spotted spider mites leaf']
+    }
+else:
+    raise ValueError(f"Unknown dataset: {USE_DATASET}")
+NUM_CLASSES_DATASET = NUM_CLASSES_TOTAL
 # 校验类别分配 (确保总共38类)
-assert sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values()) == NUM_CLASSES_PLANTVILLAGE, \
-    f"类别分配错误，应有{NUM_CLASSES_PLANTVILLAGE}个类别，实际分配了{sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values())}个。"
+assert sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values()) == NUM_CLASSES_TOTAL, \
+f"类别分配错误，应有{NUM_CLASSES_TOTAL}个类别，实际分配了{sum(len(classes) for classes in FARM_CLASS_ALLOCATION.values())}个。"
 
 # --- 7. 强化学习配置 ---
 USE_RL_CLIENT_SELECTION = True  # 是否启用RL在农场内部选择客户端

@@ -200,6 +200,99 @@ def print_memory_usage(prefix=""):
         cached = torch.cuda.memory_reserved() / 1024**3
         print(f"{prefix} GPU显存使用: {allocated:.2f}GB / {cached:.2f}GB")
 
+def local_teacher_update(
+        teacher_model: nn.Module,
+        train_loader: torch.utils.data.DataLoader,
+        epochs: int,
+        lr: float,
+        device: torch.device,
+        freeze_level: float = 0.5
+):
+    """
+    本地教师模型微调函数。
+    对教师模型进行监督学习训练，应用层级冻结以防止过拟合。
+    
+    Args:
+        teacher_model (nn.Module): 要训练的教师模型
+        train_loader (DataLoader): 本地训练数据加载器
+        epochs (int): 训练轮数
+        lr (float): 学习率
+        device (torch.device): 训练设备
+        freeze_level (float): 冻结级别，0.0-1.0，0.0表示不冻结，1.0表示冻结除分类头外的所有层
+    """
+    # 应用层级冻结
+    if freeze_level > 0:
+        print(f"    教师模型冻结级别: {freeze_level}")
+        teacher_model = freeze_layers(teacher_model, freeze_level)
+    
+    teacher_model.train()
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, teacher_model.parameters()), 
+        lr=lr
+    )
+    criterion = nn.CrossEntropyLoss()
+    
+    for epoch in range(epochs):
+        epoch_loss = 0.0
+        correct = 0
+        total = 0
+        
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            inputs, targets = inputs.to(device), targets.to(device)
+            optimizer.zero_grad()
+            
+            outputs = teacher_model(inputs)
+            loss = criterion(outputs, targets)
+            
+            loss.backward()
+            optimizer.step()
+            
+            epoch_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+        
+        accuracy = 100. * correct / total
+        avg_loss = epoch_loss / (batch_idx + 1)
+        
+        if epoch % 2 == 0 or epoch == epochs - 1:  # 每2轮或最后一轮打印
+            print(f"      教师微调轮次 {epoch+1}/{epochs} | 损失: {avg_loss:.4f} | 准确率: {accuracy:.2f}%")
+    
+    return teacher_model.state_dict()
+
+def freeze_layers(model, freeze_level: float):
+    """
+    冻结模型的一部分层。
+    
+    Args:
+        model (nn.Module): 要修改的模型
+        freeze_level (float): 0.0到1.0，0.0表示不冻结任何层，1.0表示冻结除最终分类器外的所有层
+    """
+    if freeze_level <= 0:
+        return model
+    
+    # 将模型的所有参数转换为一个列表
+    parameters = list(model.parameters())
+    
+    # 确定要冻结的参数数量
+    # 我们总是保留最后的分类头可训练
+    # ResNet的分类头是'fc'，2个参数(weight, bias)
+    num_trainable_classifier = 2
+    total_params = len(parameters)
+    num_to_freeze = int((total_params - num_trainable_classifier) * freeze_level)
+    
+    print(f"      模型总参数层数: {total_params}，冻结级别: {freeze_level}")
+    print(f"      将冻结前 {num_to_freeze} 层参数")
+    
+    # 冻结指定数量的层
+    for i, param in enumerate(parameters):
+        if i < num_to_freeze:
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
+    
+    return model
+
 def local_distill_update(
         local_teacher_model: nn.Module,
         student_model_to_train: nn.Module,

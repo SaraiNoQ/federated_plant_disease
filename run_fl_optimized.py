@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 import config_optimized as config  # 使用优化后的配置
 from src.data_loader import get_farm_dataloaders
 from src.models import build_model, build_student_model
-from src.federated import local_distill_update, aggregate_models, print_memory_usage
+from src.federated import local_distill_update, aggregate_models, print_memory_usage, local_teacher_update
 from src.utils import evaluate_model, print_metrics, quantize_and_evaluate_model
 from src.knowledge_base import KnowledgeBase
 from src.rl_agents import MetaControllerA2C, LocalExecutorUCB
@@ -116,6 +116,16 @@ def main():
     last_global_diversity = 0.0
 
     print_memory_usage("初始化完成后")
+
+    # 创建持久化学生模型字典
+    farm_student_models = {}
+    for farm_id in config.FARM_CLASS_ALLOCATION.keys():
+        farm_data = all_farms_data_loaders[farm_id]
+        farm_student_models[farm_id] = build_student_model(
+            num_classes=farm_data["num_classes"],
+            architecture=config.DISTILL_MODEL_ARCH
+        ).to(config.DEVICE)
+    print("持久化学生模型字典初始化完成")
 
     # 2. 主循环：多轮知识路由与本地优化
     for server_round_idx in range(config.SERVER_ROUNDS):
@@ -227,11 +237,31 @@ def main():
             farm_data = all_farms_data_loaders[farm_id]
             directive = farm_directives[farm_id]
 
-            # 准备本轮的初始学生模型和教师模型
-            farm_student_model = build_student_model(
-                num_classes=farm_data["num_classes"],
-                architecture=config.DISTILL_MODEL_ARCH
-            ).to(config.DEVICE)
+            # 从持久化字典中获取学生模型，继承上一轮的状态
+            farm_student_model = farm_student_models[farm_id]
+            print(f"  使用持久化学生模型作为起点 (农场 {farm_id})")
+
+            # --- 阶段一：教师模型微调 ---
+            print(f"  --- 阶段一：教师模型微调 (农场 {farm_id}) ---")
+            for client_idx in range(config.CLIENT_UNITS_PER_FARM):
+                print(f"    客户端 {client_idx} 教师模型微调开始...")
+                teacher_model = local_teachers[farm_id][client_idx]
+                
+                # 微调教师模型
+                updated_teacher_dict = local_teacher_update(
+                    teacher_model=teacher_model,
+                    train_loader=farm_data["unit_loaders"][client_idx],
+                    epochs=config.EPOCHS_PER_UNIT,  # 使用与蒸馏相同的轮数
+                    lr=config.LEARNING_RATE_DISTILL,
+                    device=config.DEVICE,
+                    freeze_level=0.5  # 冻结50%的层
+                )
+                
+                # 更新教师模型状态
+                teacher_model.load_state_dict(updated_teacher_dict)
+                print(f"    客户端 {client_idx} 教师模型微调完成")
+            
+            print(f"  --- 阶段一完成：所有教师模型已微调 (农场 {farm_id}) ---")
 
             # 如果是TRANSFER_IN，加载教师学生模型
             transfer_teacher_student_model = None
@@ -304,8 +334,16 @@ def main():
                     aggregated_weights = aggregate_models(student_updates, f"Farm {farm_id} Student Models")
                     farm_student_model.load_state_dict(aggregated_weights)
 
-                final_metrics = evaluate_model(farm_student_model, farm_data["val_loader"], config.DEVICE)
-                print_metrics(final_metrics, f"    内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 学生模型")
+                # 评估学生模型
+                student_metrics = evaluate_model(farm_student_model, farm_data["val_loader"], config.DEVICE)
+                
+                # 评估教师模型（使用第一个客户端的教师模型作为代表）
+                teacher_metrics = evaluate_model(local_teachers[farm_id][0], farm_data["val_loader"], config.DEVICE)
+                
+                print(f"    内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 学生模型 (MobileNet_v2):")
+                print_metrics(student_metrics, "      ")
+                print(f"    内部FL轮次 {farm_fl_round + 1}/{config.FARM_FL_ROUNDS} | 教师模型 (ResNet34):")
+                print_metrics(teacher_metrics, "      ")
 
             # 农场本轮任务结束
             farm_end_time = time.time()
@@ -326,6 +364,10 @@ def main():
                 'metrics': final_farm_metrics,
                 'latency': latency
             }
+
+            # 将训练好的学生模型状态保存回持久化字典
+            farm_student_models[farm_id] = farm_student_model
+            print(f"  已保存农场 {farm_id} 的学生模型状态到持久化字典")
 
             # 清理显存
             if torch.cuda.is_available():
