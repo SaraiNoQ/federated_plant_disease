@@ -88,8 +88,8 @@ def main():
     farm_to_idx = {fid: i for i, fid in enumerate(farm_ids_list)}
 
     # --- HRL 初始化 ---
-    # 高层RL Agent(4全局 + 6农场特定) - 更新状态维度
-    state_dim = 10
+    # 高层RL Agent(4全局 + 8农场特定) - 更新状态维度
+    state_dim = 12
     meta_controller = MetaControllerA2C(
         num_farms=config.NUM_FARMS,
         state_dim=state_dim,
@@ -145,8 +145,8 @@ def main():
         available_teachers_ids = knowledge_base.get_all_farm_ids()
         available_teachers_indices = [farm_to_idx[fid] for fid in available_teachers_ids]
         
-        # 计算动态探索率：随着轮次增加而减少
-        exploration_rate = max(0.05, 0.3 * (1 - server_round_idx / config.SERVER_ROUNDS))
+        # 计算动态探索率：随着轮次增加而减少，但保持最小探索率
+        exploration_rate = max(0.15, 0.4 * (1 - server_round_idx / config.SERVER_ROUNDS))
         
         print(f"  可用教师: {available_teachers_ids}")
         print(f"  探索率: {exploration_rate:.3f}")
@@ -162,24 +162,36 @@ def main():
                 # 添加农场类别多样性、历史性能趋势等特征
                 farm_classes = config.FARM_CLASS_ALLOCATION[farm_id]
                 class_diversity = len(farm_classes) / 10.0  # 归一化
-                # 计算性能趋势（简化版）
-                performance_trend = 1.0 if metrics['accuracy'] > 50 else 0.0
+                # 计算性能趋势（更精细）
+                performance_trend = min(1.0, max(0.0, (metrics['accuracy'] - 30) / 70.0))  # 30-100映射到0-1
+                # 添加类别互补性特征
+                farm_class_set = set(farm_classes)
+                complementary_score = 0.0
+                for teacher_id in available_teachers_ids:
+                    if teacher_id != farm_id:
+                        teacher_classes = set(config.FARM_CLASS_ALLOCATION[teacher_id])
+                        overlap = len(farm_class_set & teacher_classes) / len(farm_class_set | teacher_classes)
+                        complementary_score += (1 - overlap)  # 互补性越高，分数越高
+                complementary_score = min(1.0, complementary_score / len(available_teachers_ids))
+                
                 farm_specific_features = [
                     metrics['accuracy']/100, 
                     metrics['f1_score'], 
                     metrics['loss'], 
                     class_diversity,
                     performance_trend,
-                    farm_idx / config.NUM_FARMS  # 农场索引归一化
+                    farm_idx / config.NUM_FARMS,  # 农场索引归一化
+                    complementary_score,  # 类别互补性
+                    len(farm_classes) / 15.0  # 类别数量归一化
                 ]
             else: # 新农场
                 farm_classes = config.FARM_CLASS_ALLOCATION[farm_id]
                 class_diversity = len(farm_classes) / 10.0
                 farm_specific_features = [
-                    0.0, 0.0, 1.0, class_diversity, 0.0, farm_idx / config.NUM_FARMS
+                    0.0, 0.0, 1.0, class_diversity, 0.0, farm_idx / config.NUM_FARMS, 0.5, len(farm_classes) / 15.0
                 ]
             
-            # 拼接成最终状态（现在状态维度为10）
+            # 拼接成最终状态（现在状态维度为12）
             current_state = global_context + farm_specific_features
 
             # --- 获取决策 ---
@@ -345,14 +357,16 @@ def main():
         global_reward_component = config.W_EFFICIENCY_GLOBAL * efficiency_gain + config.W_DIVERSITY_GLOBAL * diversity_gain
         # 3. 计算并分配个性化奖励
         individual_rewards = []
-        w_local_gain = 0.4  # 增加本地增益权重
+        w_local_gain = 0.5  # 增加本地增益权重
         w_transfer_success = 0.2  # 知识转移成功奖励
+        w_diversity_contribution = 0.1  # 多样性贡献奖励
         
         for farm_id in active_farm_ids:
             current_info = newly_trained_student_models.get(farm_id)
             last_info = knowledge_base.get_model(farm_id)
             local_acc_gain = 0.0
             transfer_success_bonus = 0.0
+            diversity_contribution = 0.0
             
             if current_info:
                 if last_info:
@@ -365,14 +379,26 @@ def main():
                 if directive.get('role') == 'TRANSFER_IN':
                     # 如果转移后性能提升，给予额外奖励
                     if local_acc_gain > 0:
-                        transfer_success_bonus = 0.5
+                        transfer_success_bonus = 0.8  # 增加成功奖励
                     else:
-                        transfer_success_bonus = -0.2  # 转移失败惩罚
+                        transfer_success_bonus = -0.3  # 转移失败惩罚
+                
+                # 计算多样性贡献
+                farm_classes = config.FARM_CLASS_ALLOCATION[farm_id]
+                farm_class_set = set(farm_classes)
+                unique_contribution = 0.0
+                for other_farm_id in active_farm_ids:
+                    if other_farm_id != farm_id:
+                        other_classes = set(config.FARM_CLASS_ALLOCATION[other_farm_id])
+                        overlap = len(farm_class_set & other_classes) / len(farm_class_set | other_classes)
+                        unique_contribution += (1 - overlap)
+                diversity_contribution = min(1.0, unique_contribution / (len(active_farm_ids) - 1))
             
-            # 组合奖励：全局效率 + 本地增益 + 转移成功奖励
-            reward = (1 - w_local_gain - w_transfer_success) * global_reward_component + \
+            # 组合奖励：全局效率 + 本地增益 + 转移成功奖励 + 多样性贡献
+            reward = (1 - w_local_gain - w_transfer_success - w_diversity_contribution) * global_reward_component + \
                     w_local_gain * (local_acc_gain / 10.0) + \
-                    w_transfer_success * transfer_success_bonus
+                    w_transfer_success * transfer_success_bonus + \
+                    w_diversity_contribution * diversity_contribution
             
             individual_rewards.append(reward)
 

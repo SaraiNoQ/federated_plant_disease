@@ -8,17 +8,17 @@ OUTPUT_DIR = './outputs_optimized'
 
 # --- 2. 顶级联邦学习参数 (农场间) ---
 NUM_FARMS = 6             # 总农场数量 (A, B, C, D, E, F)
-SERVER_ROUNDS = 5         # 服务器聚合农场模型的全局轮数，从10降低到5
+SERVER_ROUNDS = 10         # 服务器聚合农场模型的全局轮数，从10降低到5
 
 # --- 3. 农场内联邦学习参数 (模拟设备/计算单元) ---
-CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)，从5降低到3
-FARM_FL_ROUNDS = 5       # 每个农场内部联邦学习的通信轮数，从10降低到5
-UNITS_PER_FARM_ROUND = 3  # 每轮农场内FL选择的计算单元数量，从4降低到2
+CLIENT_UNITS_PER_FARM = 7 # 每个农场内部的计算单元数量 (客户端)，从5降低到3
+FARM_FL_ROUNDS = 8       # 每个农场内部联邦学习的通信轮数，从10降低到5
+UNITS_PER_FARM_ROUND = 5  # 每轮农场内FL选择的计算单元数量，从4降低到2
 EPOCHS_PER_UNIT = 2       # 每个计算单元本地训练的epoch数，从3降低到2
 
 # --- 4. 模型与训练参数 ---
 NUM_CLASSES_PLANTVILLAGE = 38 # PlantVillage总类别数
-BATCH_SIZE = 64              # 批量大小，从128降低到32
+BATCH_SIZE = 128              # 批量大小，从128降低到32
 LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 NUM_WORKERS = 8              # 从6降低到4

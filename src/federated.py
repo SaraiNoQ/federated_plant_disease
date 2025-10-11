@@ -282,14 +282,11 @@ def local_distill_update(
             total_loss.backward()
             optimizer.step()
 
-            # 清理梯度
-            optimizer.zero_grad(set_to_none=True)
-
             # 定期清理显存和监控
-            if batch_idx % config.CLEAN_CACHE_INTERVAL == 0 and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # if batch_idx % config.CLEAN_CACHE_INTERVAL == 0 and torch.cuda.is_available():
+            #     torch.cuda.empty_cache()
             
-            if batch_idx % config.MEMORY_MONITOR_INTERVAL == 0 and torch.cuda.is_available():
-                print_memory_usage(f"蒸馏轮次 {epoch+1}/{epochs} 批次 {batch_idx}")
+            # if batch_idx % config.MEMORY_MONITOR_INTERVAL == 0 and torch.cuda.is_available():
+            #     print_memory_usage(f"蒸馏轮次 {epoch+1}/{epochs} 批次 {batch_idx}")
 
     return student_model_to_train.state_dict()
