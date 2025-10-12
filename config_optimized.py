@@ -12,8 +12,8 @@ SERVER_ROUNDS = 10         # 服务器聚合农场模型的全局轮数，从10�
 
 # --- 3. 农场内联邦学习参数 (模拟设备/计算单元) ---
 CLIENT_UNITS_PER_FARM = 5 # 每个农场内部的计算单元数量 (客户端)，从5降低到3
-FARM_FL_ROUNDS = 10       # 每个农场内部联邦学习的通信轮数，从10降低到5
-UNITS_PER_FARM_ROUND = 4  # 每轮农场内FL选择的计算单元数量，从4降低到2
+FARM_FL_ROUNDS = 6       # 每个农场内部联邦学习的通信轮数，从10降低到5
+UNITS_PER_FARM_ROUND = 5  # 每轮农场内FL选择的计算单元数量，从4降低到2
 EPOCHS_PER_UNIT = 2       # 每个计算单元本地训练的epoch数，从3降低到2
 
 # --- 4. 模型与训练参数 ---
@@ -21,7 +21,7 @@ EPOCHS_PER_UNIT = 2       # 每个计算单元本地训练的epoch数，从3降�
 BATCH_SIZE = 128              # 批量大小，从128降低到32
 LEARNING_RATE_DISTILL = 0.001 # 模型蒸馏的学习率
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = 8              # 从6降低到4
+NUM_WORKERS = 6              # 从6降低到4
 MODEL_ARCHITECTURE = 'resnet34'  # 从resnet34改为更轻量的resnet18
 DISTILL_MODEL_ARCH = 'mobilenet_v2'
 
