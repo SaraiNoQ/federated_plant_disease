@@ -63,32 +63,41 @@ def create_model_copy(model, num_classes, device):
     model_copy.to(device)
     return model_copy
 
-def teacher_knowledge_update(
+def teacher_evolution_update(
         teacher_model: torch.nn.Module,
-        student_model: torch.nn.Module,
+        source_student_model: torch.nn.Module,
         train_loader: torch.utils.data.DataLoader,
+        val_loader: torch.utils.data.DataLoader,
         epochs: int,
         lr: float,
         temperature: float,
-        alpha: float,
-        device: torch.device
+        transfer_budget: float,
+        device: torch.device,
+        freeze_level: float = 0.5
 ):
     """
-    教师模型知识更新函数：让教师模型从学生模型中学习新知识
-    使用反向蒸馏的方式，教师模型作为学生，学生模型作为教师
+    教师模型进化函数：在保持本地专业性的前提下吸收外来知识
+    使用复合损失函数，同时优化本地任务性能和知识蒸馏
     
     Args:
-        teacher_model: 要更新的教师模型
-        student_model: 作为知识源的学生模型
-        train_loader: 训练数据加载器
+        teacher_model: 要进化的教师模型
+        source_student_model: 作为知识源的学生模型（来自其他农场）
+        train_loader: 本地训练数据加载器
+        val_loader: 本地验证数据加载器
         epochs: 训练轮数
         lr: 学习率
         temperature: 蒸馏温度
-        alpha: 蒸馏损失权重
+        transfer_budget: 知识迁移预算（控制外来知识权重）
         device: 训练设备
+        freeze_level: 冻结级别，防止过拟合
     """
+    # 应用层级冻结，保护已有知识
+    if freeze_level > 0:
+        print(f"      教师进化冻结级别: {freeze_level}")
+        teacher_model = freeze_layers(teacher_model, freeze_level)
+    
     teacher_model.train()
-    student_model.eval()  # 学生模型作为固定的知识源
+    source_student_model.eval()  # 知识源模型固定
     
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, teacher_model.parameters()), 
@@ -97,39 +106,62 @@ def teacher_knowledge_update(
     
     for epoch in range(epochs):
         epoch_loss = 0.0
+        epoch_ce_loss = 0.0
+        epoch_kd_loss = 0.0
         batch_count = 0
         
         for batch_idx, (inputs, hard_labels) in enumerate(train_loader):
             inputs, hard_labels = inputs.to(device), hard_labels.to(device)
             optimizer.zero_grad()
             
-            # 学生模型作为教师，提供软标签
-            with torch.no_grad():
-                student_outputs = student_model(inputs)
-            
-            # 教师模型作为学生，学习学生模型的知识
+            # 教师模型推理
             teacher_outputs = teacher_model(inputs)
             
-            # 计算蒸馏损失（反向蒸馏）
-            loss_kd = torch.nn.KLDivLoss(reduction='batchmean')(
-                torch.nn.functional.log_softmax(teacher_outputs / temperature, dim=1),
-                torch.nn.functional.softmax(student_outputs / temperature, dim=1)
-            ) * (temperature * temperature)
-            
-            # 计算交叉熵损失（保持原始任务能力）
+            # 计算本地交叉熵损失（保持专业性）
             loss_ce = torch.nn.CrossEntropyLoss()(teacher_outputs, hard_labels)
             
-            # 组合损失
-            total_loss = alpha * loss_kd + (1 - alpha) * loss_ce
+            # 计算知识蒸馏损失（吸收外来知识）
+            with torch.no_grad():
+                source_outputs = source_student_model(inputs)
+            
+            loss_kd = torch.nn.KLDivLoss(reduction='batchmean')(
+                torch.nn.functional.log_softmax(teacher_outputs / temperature, dim=1),
+                torch.nn.functional.softmax(source_outputs / temperature, dim=1)
+            ) * (temperature * temperature)
+            
+            # 复合损失函数：本地专业性 + 外来知识吸收
+            total_loss = (1 - transfer_budget) * loss_ce + transfer_budget * loss_kd
             
             total_loss.backward()
             optimizer.step()
             
             epoch_loss += total_loss.item()
+            epoch_ce_loss += loss_ce.item()
+            epoch_kd_loss += loss_kd.item()
             batch_count += 1
         
         avg_loss = epoch_loss / batch_count if batch_count > 0 else 0
-        print(f"      教师知识更新轮次 {epoch+1}/{epochs} | 平均损失: {avg_loss:.4f}")
+        avg_ce_loss = epoch_ce_loss / batch_count if batch_count > 0 else 0
+        avg_kd_loss = epoch_kd_loss / batch_count if batch_count > 0 else 0
+        
+        # 每轮评估本地验证集性能，确保专业性不下降
+        if epoch % 2 == 0 or epoch == epochs - 1:
+            teacher_model.eval()
+            val_correct = 0
+            val_total = 0
+            
+            with torch.no_grad():
+                for val_inputs, val_targets in val_loader:
+                    val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+                    val_outputs = teacher_model(val_inputs)
+                    _, val_predicted = val_outputs.max(1)
+                    val_total += val_targets.size(0)
+                    val_correct += val_predicted.eq(val_targets).sum().item()
+            
+            val_accuracy = 100. * val_correct / val_total if val_total > 0 else 0
+            teacher_model.train()
+            
+            print(f"      教师进化轮次 {epoch+1}/{epochs} | 总损失: {avg_loss:.4f} | CE: {avg_ce_loss:.4f} | KD: {avg_kd_loss:.4f} | 验证准确率: {val_accuracy:.2f}%")
     
     return teacher_model.state_dict()
 
@@ -336,8 +368,21 @@ def main():
             farm_student_model = farm_student_models[farm_id]
             print(f"  使用持久化学生模型作为起点 (农场 {farm_id})")
 
-            # --- 阶段一：教师模型微调 ---
+            # --- 阶段一：教师模型微调（进化） ---
             print(f"  --- 阶段一：教师模型微调 (农场 {farm_id}) ---")
+            
+            # 如果是TRANSFER_IN，加载教师学生模型
+            transfer_teacher_student_model = None
+            if directive['role'] == 'TRANSFER_IN':
+                teacher_info = knowledge_base.get_model(directive['source'])
+                # 注意：知识库现在存的是学生模型
+                transfer_teacher_student_model = build_student_model(
+                    num_classes=all_farms_data_loaders[directive['source']]["num_classes"],
+                    architecture=config.DISTILL_MODEL_ARCH
+                ).to(config.DEVICE)
+                transfer_teacher_student_model.load_state_dict(teacher_info['state_dict'])
+                print(f"    已加载源农场 {directive['source']} 的学生模型作为知识源")
+            
             for _ in range(config.EPOCHS_PER_TEACHER_TRAIN):
                 for client_idx in range(config.CLIENT_UNITS_PER_FARM):
                     print(f"    客户端 {client_idx} 教师模型微调开始...")
@@ -346,21 +391,38 @@ def main():
                     # 应用层级冻结防止过拟合（小样本数据集专用优化）
                     teacher_model = freeze_layers(teacher_model, config.FREEZE_BACKBONE_LEVEL)
                     
-                    # 微调教师模型
-                    updated_teacher_dict = local_teacher_update(
-                        teacher_model=teacher_model,
-                        train_loader=farm_data["unit_loaders"][client_idx],
-                        val_loader=farm_data["val_loader"],  # 添加验证数据加载器
-                        epochs=config.EPOCHS_PER_UNIT,  # 使用与蒸馏相同的轮数
-                        lr=config.LEARNING_RATE_DISTILL,
-                        device=config.DEVICE,
-                        freeze_level=config.FREEZE_BACKBONE_LEVEL  # 使用配置中的冻结级别
-                    )
+                    # 根据指令类型选择不同的教师训练方式
+                    if directive['role'] == 'TRANSFER_IN' and transfer_teacher_student_model is not None:
+                        # 教师进化：在保持本地专业性的前提下吸收外来知识
+                        print(f"      使用教师进化训练 (预算: {directive.get('budget', 0.0)})")
+                        updated_teacher_dict = teacher_evolution_update(
+                            teacher_model=teacher_model,
+                            source_student_model=transfer_teacher_student_model,
+                            train_loader=farm_data["unit_loaders"][client_idx],
+                            val_loader=farm_data["val_loader"],
+                            epochs=config.EPOCHS_PER_UNIT,
+                            lr=config.LEARNING_RATE_DISTILL,
+                            temperature=config.TEMPERATURE,
+                            transfer_budget=directive.get('budget', 0.0),
+                            device=config.DEVICE,
+                            freeze_level=config.FREEZE_BACKBONE_LEVEL
+                        )
+                    else:
+                        # 标准教师微调：只关注本地数据
+                        print(f"      使用标准教师微调")
+                        updated_teacher_dict = local_teacher_update(
+                            teacher_model=teacher_model,
+                            train_loader=farm_data["unit_loaders"][client_idx],
+                            val_loader=farm_data["val_loader"],
+                            epochs=config.EPOCHS_PER_UNIT,
+                            lr=config.LEARNING_RATE_DISTILL,
+                            device=config.DEVICE,
+                            freeze_level=config.FREEZE_BACKBONE_LEVEL
+                        )
                     
                     # 更新教师模型状态
                     teacher_model.load_state_dict(updated_teacher_dict)
                     print(f"    客户端 {client_idx} 教师模型微调完成")
-
 
                 # --- 教师模型聚合 ---
                 print(f"  --- 教师模型聚合 (农场 {farm_id}) ---")
@@ -379,41 +441,6 @@ def main():
                     print(f"    教师模型聚合完成，已应用到所有客户端")
                 
             print(f"  --- 阶段一完成：所有教师模型已微调 (农场 {farm_id}) ---")
-            
-            # 如果是TRANSFER_IN，加载教师学生模型
-            transfer_teacher_student_model = None
-            if directive['role'] == 'TRANSFER_IN':
-                teacher_info = knowledge_base.get_model(directive['source'])
-                # 注意：知识库现在存的是学生模型
-                transfer_teacher_student_model = build_student_model(
-                    num_classes=all_farms_data_loaders[directive['source']]["num_classes"],
-                    architecture=config.DISTILL_MODEL_ARCH
-                ).to(config.DEVICE)
-                transfer_teacher_student_model.load_state_dict(teacher_info['state_dict'])
-                
-                # --- 新增：教师模型知识更新 ---
-                print(f"  --- 教师模型知识更新 (从 {directive['source']} 学习) ---")
-                for client_idx in range(config.CLIENT_UNITS_PER_FARM):
-                    print(f"    客户端 {client_idx} 教师模型知识更新开始...")
-                    teacher_model = local_teachers[farm_id][client_idx]
-                    
-                    # 使用反向蒸馏让教师模型从学生模型中学习新知识
-                    updated_teacher_dict = teacher_knowledge_update(
-                        teacher_model=teacher_model,
-                        student_model=transfer_teacher_student_model,
-                        train_loader=farm_data["unit_loaders"][client_idx],
-                        epochs=2,  # 使用较少的轮数进行知识更新
-                        lr=config.LEARNING_RATE_DISTILL * 0.5,  # 使用较低的学习率
-                        temperature=config.TEMPERATURE,
-                        alpha=0.7,  # 更注重蒸馏损失
-                        device=config.DEVICE
-                    )
-                    
-                    # 更新教师模型状态
-                    teacher_model.load_state_dict(updated_teacher_dict)
-                    print(f"    客户端 {client_idx} 教师模型知识更新完成")
-                
-                print(f"  --- 教师模型知识更新完成 (农场 {farm_id}) ---")
 
             # 内部FedMD循环
             for farm_fl_round in range(config.FARM_FL_ROUNDS):
